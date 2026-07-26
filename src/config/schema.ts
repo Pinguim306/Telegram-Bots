@@ -43,6 +43,20 @@ export const rawNetworkSchema = z.object({
   confirmations: z.number().int().min(0).default(3),
   maxBlockRange: z.number().int().positive().default(2000),
   quoteTokens: z.array(quoteTokenSchema).default([]),
+  /**
+   * Teto de requisições ao RPC desta rede.
+   *
+   * Existe porque RPC público não é tudo igual: o gateway público da thirdweb na
+   * Arc mainnet responde 429 depois de poucas chamadas, enquanto o RPC da testnet
+   * aguenta bem mais. Sem poder afrouxar ou apertar por rede, ou o bot fica lento
+   * onde não precisa, ou apanha de 429 onde precisa ir devagar.
+   */
+  rateLimit: z
+    .object({
+      concurrency: z.number().int().positive().default(4),
+      ratePerSec: z.number().positive().default(12),
+    })
+    .optional(),
 });
 
 export const networksFileSchema = z.object({
@@ -63,6 +77,7 @@ export interface ResolvedNetwork {
   confirmations: number;
   maxBlockRange: number;
   quoteTokens: QuoteToken[];
+  rateLimit?: { concurrency: number; ratePerSec: number };
 }
 
 export const referralPlatformSchema = z.object({

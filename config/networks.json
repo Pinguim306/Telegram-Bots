@@ -34,8 +34,27 @@
       ]
     },
     "arc-mainnet": {
+      "$comment": [
+        "VERIFICADO contra a mainnet em 2026-07-26 (chainId 5042, bloco ~12.323.000):",
+        "  - chain id 5042 (0x13b2)",
+        "  - USDC em 0x3600...0000, simbolo USDC, 6 decimals -- mesma impressao digital",
+        "    da testnet, o que confirma que a rede e a Arc",
+        "",
+        "NAO VERIFICADO (o RPC publico cortou com 429 no meio da checagem):",
+        "  - presenca do multicall3   -> `npm run doctor` confere e avisa; sem ele o bot",
+        "    so fica mais lento, nao quebra",
+        "  - blockTimeMs              -> valor herdado da testnet; o doctor mede o real",
+        "  - atividade de DEX         -> o doctor conta os eventos por tipo",
+        "Rode o doctor com um RPC decente antes de tirar o DRY_RUN.",
+        "",
+        "SEM EXPLORER: a Arc mainnet ainda nao tem block explorer publico. Os alertas",
+        "saem sem link de explorer (o codigo trata isso). Quando existir, basta definir",
+        "ARC_MAINNET_EXPLORER ou preencher explorerUrl aqui."
+      ],
       "name": "Arc",
+      "chainId": 5042,
       "chainIdEnv": "ARC_MAINNET_CHAIN_ID",
+      "rpcUrls": ["https://5042.rpc.thirdweb.com"],
       "rpcUrlsEnv": "ARC_MAINNET_RPC_URL",
       "wsUrlEnv": "ARC_MAINNET_WS_URL",
       "explorerUrlEnv": "ARC_MAINNET_EXPLORER",
@@ -44,6 +63,23 @@
       "blockTimeMs": 500,
       "confirmations": 3,
       "maxBlockRange": 2000,
+
+      "$comment_rate": [
+        "ATENCAO: https://5042.rpc.thirdweb.com e um gateway PUBLICO e devolveu 429",
+        "depois de poucas chamadas durante a verificacao. Nao aguenta os bots em",
+        "producao -- eles fazem eth_getLogs continuo mais multicall.",
+        "",
+        "Estes limites conservadores existem para o bot funcionar (devagar) no gateway",
+        "publico sem apanhar de 429. Ao migrar para um RPC pago, suba para",
+        "concurrency 4 / ratePerSec 12, que e o padrao usado na testnet.",
+        "",
+        "Como sair do publico, em ordem de esforco:",
+        "  1. Chave gratuita da thirdweb: https://5042.rpc.thirdweb.com/SEU_CLIENT_ID",
+        "  2. RPC dedicado (Alchemy / QuickNode / dRPC), via RPC_URL_OVERRIDE",
+        "  RPC_URL_OVERRIDE aceita varias URLs separadas por virgula, com failover."
+      ],
+      "rateLimit": { "concurrency": 2, "ratePerSec": 3 },
+
       "quoteTokens": [
         {
           "address": "0x3600000000000000000000000000000000000000",

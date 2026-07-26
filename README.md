@@ -46,6 +46,10 @@ https://gmgn.ai/{chain}/token/{ref}_{token}
 https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}
 ```
 
+A estrutura foi confirmada como funcional pelo dono da conta. `test/config.test.ts` trava a
+URL exata gerada a partir do config — se o formato mudar, o build quebra, em vez de o link
+seguir abrindo e parar de creditar comissão em silêncio.
+
 **Esses links só publicam em `arc-mainnet`**, por `networks` em `config/referrals.json`.
 O GMGN indexa mainnet; publicá-los durante a calibração em testnet geraria 404 em todo
 alerta. Na testnet o alerta sai só com o explorer, e o `doctor` explica exatamente por quê.
@@ -136,17 +140,28 @@ comprar, não dá para vender"*. Um bot que esconde isso queima a audiência em 
 | `config/signals.json` | Janelas, regras, pontos e cortes do bot de sinais |
 | `config/dex.json` | Rótulos de factory, listas de permissão/bloqueio |
 
-### Migrar para a mainnet
+### Mainnet
+
+Já configurada em `config/networks.json`. No `.env` basta:
 
 ```bash
 NETWORK=arc-mainnet
-ARC_MAINNET_RPC_URL=https://...
-ARC_MAINNET_CHAIN_ID=...
-ARC_MAINNET_EXPLORER=https://...
 ```
 
-Sem essas variáveis, `NETWORK=arc-mainnet` **falha no boot com mensagem explícita**. É
-intencional: alertar na rede errada é pior do que não alertar.
+Verificado on-chain: chain id **5042**, USDC em `0x3600…0000` com **6 decimals** — a mesma
+impressão digital da testnet, que é o que confirma que a rede é a Arc. As variáveis
+`ARC_MAINNET_*` continuam existindo, mas só para **sobrescrever** o arquivo; env tem
+precedência.
+
+A mainnet **ainda não tem block explorer público**. Os alertas saem sem link de explorer
+(o código lida com isso). Quando existir, defina `ARC_MAINNET_EXPLORER` e o link volta sozinho.
+
+> ⚠️ **O RPC padrão da mainnet não serve para produção.**
+> `https://5042.rpc.thirdweb.com` é um gateway público e devolveu 429 já na terceira
+> chamada durante a verificação — o `doctor` não consegue nem ler `eth_blockNumber`.
+> Pegue uma chave gratuita da thirdweb (`https://5042.rpc.thirdweb.com/SEU_CLIENT_ID`) ou
+> um RPC dedicado, e aponte `RPC_URL_OVERRIDE` para ele. Depois suba `rateLimit` em
+> `config/networks.json` de `2 / 3` para `4 / 12`.
 
 ---
 
@@ -205,10 +220,6 @@ mas **não é requisito para acompanhar a chain em tempo real**.
 - **Idade do token pode ser desconhecida** se o RPC não for archive. Nesse caso ela aparece
   como "desconhecida" e as regras de idade não se aplicam — em vez de o bot inventar um número.
 - Os limiares padrão foram calibrados contra a **testnet**. Revise no primeiro dia de mainnet.
-- **Os links do GMGN não foram testados ponta a ponta.** O formato é o oficial e o slug
-  `arc` está confirmado, mas não foi possível abrir uma página real de token Arc no GMGN —
-  a mainnet não está no ar e o site bloqueia acesso automatizado. Antes de tirar o
-  `DRY_RUN`, rode `npm run doctor` e clique no link que ele imprime.
 
 ---
 
