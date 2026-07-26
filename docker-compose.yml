@@ -1,0 +1,30 @@
+services:
+  launches:
+    build: .
+    image: arc-telegram-bots
+    container_name: arc-launches
+    restart: unless-stopped
+    command: ["node", "dist/bots/launches/index.js"]
+    env_file: .env
+    volumes:
+      # Bancos separados por bot; sobrevivem ao recreate do container.
+      - ./data:/app/data
+      # config/ montado para ajustar limiares e referrals sem rebuild.
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  signals:
+    build: .
+    image: arc-telegram-bots
+    container_name: arc-signals
+    restart: unless-stopped
+    command: ["node", "dist/bots/signals/index.js"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

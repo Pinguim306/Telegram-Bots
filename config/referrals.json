@@ -1,0 +1,93 @@
+{
+  "$comment": [
+    "CAMADA DE MONETIZACAO.",
+    "",
+    "Cada alerta publica uma linha de links. Todo link sai daqui, e todo link pode carregar",
+    "o seu codigo de referral. O bot NAO tem URL de plataforma hardcoded em lugar nenhum.",
+    "",
+    "IMPORTANTE / LEIA ANTES DE ATIVAR:",
+    "  - 'verified: true'  -> o formato da URL foi conferido e funciona hoje.",
+    "  - 'verified: false' -> template PLACEHOLDER. A plataforma pode nao existir na Arc ainda,",
+    "                         ou o formato do link de referral pode ser outro. Confirme o formato",
+    "                         no programa de afiliados da plataforma ANTES de habilitar,",
+    "                         senao voce publica link quebrado (ou link sem o seu ref, que e pior:",
+    "                         voce entrega o volume e nao recebe a comissao).",
+    "",
+    "Placeholders disponiveis no template:",
+    "  {token}   endereco do token",
+    "  {pool}    endereco do pool (se conhecido)",
+    "  {chainId} chain id numerico",
+    "  {chain}   slug da rede (ex: arc)",
+    "  {ref}     valor de 'ref' desta plataforma",
+    "",
+    "Se 'ref' estiver vazio, o link e publicado sem referral (ainda util pro usuario)",
+    "e um WARN aparece no log no boot, pra voce nao esquecer dinheiro na mesa."
+  ],
+  "chainSlug": "arc",
+  "platforms": [
+    {
+      "id": "arcscan",
+      "label": "Explorer",
+      "template": "https://testnet.arcscan.app/token/{token}",
+      "ref": "",
+      "enabled": true,
+      "verified": true,
+      "kind": "explorer",
+      "$note": "Explorer oficial (Blockscout). Nao monetiza, mas da credibilidade ao alerta. Troque o host quando a mainnet subir."
+    },
+    {
+      "id": "dexscreener",
+      "label": "DexScreener",
+      "template": "https://dexscreener.com/{chain}/{pool}",
+      "ref": "",
+      "enabled": false,
+      "verified": false,
+      "kind": "chart",
+      "$note": "Habilite quando a DexScreener indexar a Arc. Confirme o slug da chain na URL deles."
+    },
+    {
+      "id": "geckoterminal",
+      "label": "GeckoTerminal",
+      "template": "https://www.geckoterminal.com/{chain}/pools/{pool}",
+      "ref": "",
+      "enabled": false,
+      "verified": false,
+      "kind": "chart"
+    },
+    {
+      "id": "trade_generic",
+      "label": "Comprar",
+      "template": "https://SUA-PLATAFORMA.com/swap?chain={chainId}&outputCurrency={token}&ref={ref}",
+      "ref": "SEU_CODIGO_AQUI",
+      "enabled": false,
+      "verified": false,
+      "kind": "trade",
+      "$note": "ESTE E O LINK QUE PAGA. Troque host+formato pelo da plataforma onde voce tem afiliado."
+    },
+    {
+      "id": "bot_generic",
+      "label": "Trading Bot",
+      "template": "https://t.me/SEU_TRADING_BOT?start=ref_{ref}_ca_{token}",
+      "ref": "SEU_CODIGO_AQUI",
+      "enabled": false,
+      "verified": false,
+      "kind": "trade",
+      "$note": "Formato tipico de trading bot no Telegram (deep link com ref + contract address)."
+    },
+    {
+      "id": "cex_generic",
+      "label": "CEX",
+      "template": "https://SUA-CEX.com/join?ref={ref}",
+      "ref": "SEU_CODIGO_AQUI",
+      "enabled": false,
+      "verified": false,
+      "kind": "cex",
+      "$note": "Referral de corretora costuma pagar melhor que DEX. Bom pra rodape fixo do canal."
+    }
+  ],
+  "footer": {
+    "enabled": false,
+    "text": "",
+    "$note": "Rodape fixo em todo alerta (ex: link de afiliado de CEX ou do seu canal premium)."
+  }
+}

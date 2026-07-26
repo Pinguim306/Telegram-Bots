@@ -1,0 +1,82 @@
+{
+  "$comment": [
+    "Regras do bot de sinais. Cada regra pontua; a soma dos pontos vira o score do alerta.",
+    "O alerta so sai se score >= minScore E o token passar nos filtros de elegibilidade.",
+    "Ajuste os numeros conforme a liquidez real da Arc no dia do lancamento -- os defaults",
+    "aqui sao conservadores de proposito, pra nao spammar canal no primeiro dia."
+  ],
+  "windows": { "shortSec": 180, "mediumSec": 900, "longSec": 3600 },
+  "eligibility": {
+    "minLiquidityUsd": 2000,
+
+    "$comment_mcap": [
+      "Teto de market cap (0 desliga). Isto nao e teorico: rodando contra a Arc,",
+      "20 compras somando US$ 600 em USDT geraram um 'sinal' de um token de US$ 46M.",
+      "Um canal de micro cap que alerta stablecoin gigante perde a razao de existir."
+    ],
+    "maxMarketCapUsd": 5000000,
+
+    "minAgeSec": 60,
+    "maxAgeSec": 604800,
+    "minBuysShort": 5,
+    "minVolumeUsdShort": 300,
+    "minUniqueBuyersShort": 3
+  },
+  "rules": [
+    {
+      "id": "buy_pressure",
+      "label": "Pressão compradora",
+      "points": 25,
+      "params": { "minBuyRatio": 0.7, "minBuys": 8 }
+    },
+    {
+      "id": "volume_spike",
+      "label": "Spike de volume",
+      "points": 30,
+      "params": { "minMultiple": 4, "minVolumeUsd": 1000 }
+    },
+    {
+      "id": "unique_buyers",
+      "label": "Compradores únicos",
+      "points": 20,
+      "params": { "minUniqueBuyers": 12 }
+    },
+    {
+      "id": "price_change",
+      "label": "Valorização",
+      "points": 15,
+      "params": { "minPctShort": 25 }
+    },
+    {
+      "id": "net_inflow",
+      "label": "Fluxo líquido positivo",
+      "points": 10,
+      "params": { "minNetUsd": 1500 }
+    },
+    {
+      "id": "fresh_launch",
+      "label": "Token recém-lançado",
+      "points": 10,
+      "params": { "maxAgeSec": 3600 }
+    }
+  ],
+  "minScore": 55,
+  "cooldownSec": 1800,
+  "reAlertScoreDelta": 20,
+  "maxAlertsPerHour": 12,
+
+  "advanced": {
+    "$comment": [
+      "resolveTradersFromTx: por padrao o 'trader' de um swap e o destinatario do evento.",
+      "Isso e barato e correto na maioria dos casos, mas erra em swap multi-hop, onde o",
+      "destinatario e o proximo pool, e nao a pessoa. Ligando esta opcao o bot busca o",
+      "remetente da transacao (tx.from), o que deixa 'compradores unicos' exato -- ao custo",
+      "de uma chamada RPC por transacao nova. Ligue se voce tem RPC pago; deixe desligado",
+      "no RPC publico."
+    ],
+    "resolveTradersFromTx": false,
+    "evaluateIntervalSec": 20,
+    "maxTokensPerEvaluation": 40,
+    "liquidityCacheSec": 120
+  }
+}
