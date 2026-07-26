@@ -142,7 +142,11 @@ async function main(): Promise<void> {
   }
 
   section('Monetização');
-  const referrals = new ReferralBuilder(loadReferrals());
+  const referralsConfig = loadReferrals();
+  const referrals = new ReferralBuilder(referralsConfig, {
+    networkKey: network.key,
+    explorerUrl: network.explorerUrl,
+  });
   const sample = referrals.build({
     token: '0x0000000000000000000000000000000000000dead',
     pool: '0x000000000000000000000000000000000000beef',
@@ -158,6 +162,22 @@ async function main(): Promise<void> {
   const monetized = sample.filter((l) => l.monetized).length;
   if (sample.length > 0 && monetized === 0) {
     warn('nenhum link carrega código de referral — os alertas não vão gerar receita');
+  }
+
+  // Plataforma configurada mas restrita a outra rede não aparece na lista acima.
+  // Sem este aviso o usuário configura o referral, não vê o link e acha que quebrou.
+  const gated = referralsConfig.platforms.filter(
+    (p) => p.enabled && p.networks.length > 0 && !p.networks.includes(network.key),
+  );
+  for (const platform of gated) {
+    warn(
+      `${platform.id} está configurado mas restrito a ${platform.networks.join(', ')} — não publica em ${network.key}`,
+    );
+  }
+  if (gated.some((p) => p.kind === 'trade') && monetized === 0) {
+    warn(
+      'os links que pagam estão restritos a outra rede: nesta rede os alertas saem sem monetização (esperado durante a calibração em testnet)',
+    );
   }
 
   section('Telegram');

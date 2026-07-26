@@ -5,35 +5,68 @@
     "Cada alerta publica uma linha de links. Todo link sai daqui, e todo link pode carregar",
     "o seu codigo de referral. O bot NAO tem URL de plataforma hardcoded em lugar nenhum.",
     "",
-    "IMPORTANTE / LEIA ANTES DE ATIVAR:",
-    "  - 'verified: true'  -> o formato da URL foi conferido e funciona hoje.",
-    "  - 'verified: false' -> template PLACEHOLDER. A plataforma pode nao existir na Arc ainda,",
-    "                         ou o formato do link de referral pode ser outro. Confirme o formato",
-    "                         no programa de afiliados da plataforma ANTES de habilitar,",
-    "                         senao voce publica link quebrado (ou link sem o seu ref, que e pior:",
-    "                         voce entrega o volume e nao recebe a comissao).",
+    "Campos:",
+    "  verified  -> true = formato da URL conferido na documentacao oficial da plataforma.",
+    "  networks  -> em quais redes esta plataforma publica. VAZIO = todas.",
+    "               Serve para agregador que so indexa mainnet: deixar habilitado enquanto",
+    "               o bot roda em testnet geraria 404 em todo alerta.",
+    "  ref       -> seu codigo. Vazio num link de trade faz o bot gritar no log no boot:",
+    "               esse e o pior caso possivel, voce entrega o volume e nao recebe nada.",
     "",
-    "Placeholders disponiveis no template:",
-    "  {token}   endereco do token",
-    "  {pool}    endereco do pool (se conhecido)",
-    "  {chainId} chain id numerico",
-    "  {chain}   slug da rede (ex: arc)",
-    "  {ref}     valor de 'ref' desta plataforma",
-    "",
-    "Se 'ref' estiver vazio, o link e publicado sem referral (ainda util pro usuario)",
-    "e um WARN aparece no log no boot, pra voce nao esquecer dinheiro na mesa."
+    "Placeholders: {token} {pool} {chainId} {chain} {explorer} {ref}",
+    "  {explorer} vem da config da REDE, nunca escrito a mao aqui -- host de explorer",
+    "  digitado direto continuaria apontando para a testnet depois da migracao."
   ],
   "chainSlug": "arc",
   "platforms": [
     {
+      "id": "gmgn_web",
+      "label": "Comprar (GMGN)",
+      "template": "https://gmgn.ai/{chain}/token/{ref}_{token}",
+      "ref": "Pinguim",
+      "enabled": true,
+      "verified": true,
+      "kind": "trade",
+      "networks": ["arc-mainnet"],
+      "$note": [
+        "ESTE E O LINK QUE PAGA.",
+        "Formato retirado da documentacao oficial: docs.gmgn.ai/index/referral-link",
+        "  Token Page: https://gmgn.ai/{Chain}/token/{ReferralCode}_{TokenContract}",
+        "Slug 'arc' confirmado pela pagina ARC Trenches em gmgn.ai/?chain=arc.",
+        "",
+        "O QUE NAO FOI POSSIVEL VERIFICAR PONTA A PONTA: abrir uma pagina real de token",
+        "Arc no GMGN, porque a Arc Mainnet ainda nao esta no ar e o gmgn.ai bloqueia",
+        "acesso automatizado (403). Assim que a mainnet subir, rode `npm run doctor`,",
+        "clique no link que ele imprime e confirme que abre a pagina do token com o",
+        "referral aplicado ANTES de tirar o DRY_RUN."
+      ]
+    },
+    {
+      "id": "gmgn_bot",
+      "label": "Bot GMGN",
+      "template": "https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}",
+      "ref": "Pinguim",
+      "enabled": true,
+      "verified": true,
+      "kind": "trade",
+      "networks": ["arc-mainnet"],
+      "$note": [
+        "Segunda superficie de conversao, do mesmo programa de afiliados.",
+        "Formato oficial: https://t.me/gmgnaibot?start=i_{ReferralCode}_{Chain}_{TokenContract}",
+        "Vale manter os dois: quem le o canal no celular converte melhor no bot do",
+        "Telegram do que abrindo o navegador."
+      ]
+    },
+    {
       "id": "arcscan",
       "label": "Explorer",
-      "template": "https://testnet.arcscan.app/token/{token}",
+      "template": "{explorer}/token/{token}",
       "ref": "",
       "enabled": true,
       "verified": true,
       "kind": "explorer",
-      "$note": "Explorer oficial (Blockscout). Nao monetiza, mas da credibilidade ao alerta. Troque o host quando a mainnet subir."
+      "networks": [],
+      "$note": "Nao monetiza, mas da credibilidade ao alerta. Usa {explorer} da rede ativa, entao acompanha a migracao testnet -> mainnet sozinho."
     },
     {
       "id": "dexscreener",
@@ -43,36 +76,8 @@
       "enabled": false,
       "verified": false,
       "kind": "chart",
-      "$note": "Habilite quando a DexScreener indexar a Arc. Confirme o slug da chain na URL deles."
-    },
-    {
-      "id": "geckoterminal",
-      "label": "GeckoTerminal",
-      "template": "https://www.geckoterminal.com/{chain}/pools/{pool}",
-      "ref": "",
-      "enabled": false,
-      "verified": false,
-      "kind": "chart"
-    },
-    {
-      "id": "trade_generic",
-      "label": "Comprar",
-      "template": "https://SUA-PLATAFORMA.com/swap?chain={chainId}&outputCurrency={token}&ref={ref}",
-      "ref": "SEU_CODIGO_AQUI",
-      "enabled": false,
-      "verified": false,
-      "kind": "trade",
-      "$note": "ESTE E O LINK QUE PAGA. Troque host+formato pelo da plataforma onde voce tem afiliado."
-    },
-    {
-      "id": "bot_generic",
-      "label": "Trading Bot",
-      "template": "https://t.me/SEU_TRADING_BOT?start=ref_{ref}_ca_{token}",
-      "ref": "SEU_CODIGO_AQUI",
-      "enabled": false,
-      "verified": false,
-      "kind": "trade",
-      "$note": "Formato tipico de trading bot no Telegram (deep link com ref + contract address)."
+      "networks": ["arc-mainnet"],
+      "$note": "Habilite quando a DexScreener indexar a Arc, e confirme o slug da chain na URL deles."
     },
     {
       "id": "cex_generic",
@@ -82,12 +87,13 @@
       "enabled": false,
       "verified": false,
       "kind": "cex",
-      "$note": "Referral de corretora costuma pagar melhor que DEX. Bom pra rodape fixo do canal."
+      "networks": [],
+      "$note": "Referral de corretora paga comissao recorrente e independe da Arc. Bom complemento ao GMGN."
     }
   ],
   "footer": {
     "enabled": false,
     "text": "",
-    "$note": "Rodape fixo em todo alerta (ex: link de afiliado de CEX ou do seu canal premium)."
+    "$note": "Rodape fixo em todo alerta (ex: link do seu canal premium)."
   }
 }

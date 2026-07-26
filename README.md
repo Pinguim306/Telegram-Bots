@@ -35,16 +35,23 @@ Rodando o `npm run doctor` numa janela de 2.000 blocos: 23 criações de pool, 7
 179 swaps V3 e 1.574 mints de token. **Já existe atividade de memecoin na Arc testnet** —
 tokens como `Fluffy`, `moloch`, `Grok` e `PROTEIN` saem de um launchpad ativo.
 
-### Uma ressalva honesta sobre monetização
+### Monetização: GMGN configurado
 
-A Arc é uma L1 institucional focada em liquidação de stablecoin. Hoje **não existe**
-plataforma de trade com programa de afiliados rodando nela — nem Photon, nem BullX, nem
-Axiom, nem DexScreener indexando a rede. Por isso `config/referrals.json` vem com
-templates marcados como `verified: false` e placeholders explícitos: o código está pronto
-para monetizar, mas **os links precisam ser preenchidos quando as plataformas existirem**.
-O bot avisa no boot toda vez que um link de trade sai sem código de referral.
+Os alertas saem com deep links do **GMGN** carregando o referral do dono do canal, em duas
+superfícies: a página do token no site e o bot do Telegram (que converte melhor em celular).
+O formato vem da [documentação oficial do GMGN](https://docs.gmgn.ai/index/referral-link):
 
-Veja [`docs/MONETIZACAO.md`](docs/MONETIZACAO.md) para as alternativas que **já** funcionam.
+```
+https://gmgn.ai/{chain}/token/{ref}_{token}
+https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}
+```
+
+**Esses links só publicam em `arc-mainnet`**, por `networks` em `config/referrals.json`.
+O GMGN indexa mainnet; publicá-los durante a calibração em testnet geraria 404 em todo
+alerta. Na testnet o alerta sai só com o explorer, e o `doctor` explica exatamente por quê.
+
+Veja [`docs/MONETIZACAO.md`](docs/MONETIZACAO.md) para as outras alavancas — em especial o
+**tier premium**, que não depende de plataforma nenhuma.
 
 ---
 
@@ -146,7 +153,7 @@ intencional: alertar na rede errada é pior do que não alertar.
 ## Operação
 
 ```bash
-npm test            # 108 testes unitários
+npm test            # 117 testes unitários
 npm run typecheck
 npm run build       # -> dist/
 docker compose up -d
@@ -198,6 +205,10 @@ mas **não é requisito para acompanhar a chain em tempo real**.
 - **Idade do token pode ser desconhecida** se o RPC não for archive. Nesse caso ela aparece
   como "desconhecida" e as regras de idade não se aplicam — em vez de o bot inventar um número.
 - Os limiares padrão foram calibrados contra a **testnet**. Revise no primeiro dia de mainnet.
+- **Os links do GMGN não foram testados ponta a ponta.** O formato é o oficial e o slug
+  `arc` está confirmado, mas não foi possível abrir uma página real de token Arc no GMGN —
+  a mainnet não está no ar e o site bloqueia acesso automatizado. Antes de tirar o
+  `DRY_RUN`, rode `npm run doctor` e clique no link que ele imprime.
 
 ---
 

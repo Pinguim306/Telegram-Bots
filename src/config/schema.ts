@@ -73,6 +73,14 @@ export const referralPlatformSchema = z.object({
   enabled: z.boolean().default(false),
   verified: z.boolean().default(false),
   kind: z.enum(['trade', 'chart', 'explorer', 'cex', 'other']).default('other'),
+  /**
+   * Redes em que esta plataforma publica. Vazio = todas.
+   *
+   * Existe porque agregador só indexa mainnet: publicar o link dele enquanto o bot
+   * roda em testnet gera 404 em todo alerta. Assim a plataforma fica configurada
+   * uma vez e só entra no ar quando o bot aponta para a rede certa.
+   */
+  networks: z.array(z.string()).default([]),
 });
 
 export type ReferralPlatform = z.infer<typeof referralPlatformSchema>;
