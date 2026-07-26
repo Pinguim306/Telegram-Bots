@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # `push` restrito a main e `pull_request` para o resto, de propósito: com
+  # push em '**' todo branch com PR aberto dispara DUAS execuções idênticas
+  # (uma pelo push, outra pelo PR), que gastam runner e poluem a lista de checks.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 permissions:
