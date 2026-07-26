@@ -31,7 +31,10 @@ export function createRuntime(bot: 'LAUNCHES' | 'SIGNALS', dbName: string): Runt
   const chain = new ChainClient(network);
   const db = openDb(env.dataDir, dbName);
   const telegram = loadTelegramEnv(bot);
-  const referrals = new ReferralBuilder(loadReferrals());
+  const referrals = new ReferralBuilder(loadReferrals(), {
+    networkKey: network.key,
+    explorerUrl: network.explorerUrl,
+  });
 
   log.info(
     {

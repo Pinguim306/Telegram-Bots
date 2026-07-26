@@ -6,6 +6,7 @@ import {
   loadReferrals,
   loadSignalsConfig,
 } from '../src/config/load.js';
+import { ReferralBuilder } from '../src/core/referrals.js';
 
 /**
  * Estes testes leem os arquivos REAIS de `config/`, não fixtures.
@@ -112,6 +113,55 @@ describe('config/launches.json', () => {
 });
 
 describe('config/referrals.json e dex.json', () => {
+  const ctx = { token: '0x00000000000000000000000000000000000000aa', chainId: 5_042_002 };
+  const onMainnet = () =>
+    new ReferralBuilder(loadReferrals(), {
+      networkKey: 'arc-mainnet',
+      explorerUrl: 'https://arcscan.app',
+    });
+
+  /**
+   * Estes dois travam o link que gera receita.
+   *
+   * O formato veio da documentação oficial do GMGN (docs.gmgn.ai/index/referral-link).
+   * Se alguém editar o template e errar a ordem do `{ref}_{token}` ou trocar o
+   * separador, o link continua abrindo — só que sem creditar a comissão. É uma falha
+   * silenciosa que só apareceria no extrato do afiliado, semanas depois.
+   */
+  it('produz o deep link de token do GMGN no formato oficial, com o referral', () => {
+    const link = onMainnet()
+      .build(ctx)
+      .find((l) => l.label.includes('GMGN') && l.url.startsWith('https://gmgn.ai'));
+    expect(link?.url).toBe(`https://gmgn.ai/arc/token/Pinguim_${ctx.token}`);
+    expect(link?.monetized).toBe(true);
+    expect(link?.kind).toBe('trade');
+  });
+
+  it('produz o deep link do bot do GMGN no formato oficial', () => {
+    const link = onMainnet()
+      .build(ctx)
+      .find((l) => l.url.startsWith('https://t.me/gmgnaibot'));
+    expect(link?.url).toBe(`https://t.me/gmgnaibot?start=i_Pinguim_arc_${ctx.token}`);
+    expect(link?.monetized).toBe(true);
+  });
+
+  it('não publica os links do GMGN em testnet', () => {
+    // GMGN indexa mainnet; em testnet cada link seria um 404 no canal.
+    const links = new ReferralBuilder(loadReferrals(), {
+      networkKey: 'arc-testnet',
+      explorerUrl: 'https://testnet.arcscan.app',
+    }).build(ctx);
+    expect(links.every((l) => !l.url.includes('gmgn'))).toBe(true);
+    // O explorer continua saindo, então o alerta nunca fica sem nenhum link.
+    expect(links.some((l) => l.kind === 'explorer')).toBe(true);
+  });
+
+  it('o explorer acompanha a rede em vez de ficar preso na testnet', () => {
+    const mainnet = onMainnet().build(ctx).find((l) => l.kind === 'explorer');
+    expect(mainnet?.url).toBe(`https://arcscan.app/token/${ctx.token}`);
+    expect(mainnet?.url).not.toContain('testnet');
+  });
+
   it('referrals é válido e todo template habilitado tem placeholder de token', () => {
     const cfg = loadReferrals();
     for (const p of cfg.platforms.filter((x) => x.enabled)) {

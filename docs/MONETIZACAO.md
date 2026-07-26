@@ -1,32 +1,45 @@
 # Monetização
 
-Você pediu que todo bot tivesse uma forma de gerar receita, e apontou links de referral
-como o caminho. Concordo que é o caminho principal — mas ele tem um problema de timing na
-Arc que precisa ser dito antes de qualquer coisa.
+Links de referral são o caminho principal, e na Arc eles têm destino: o **GMGN** suporta a
+rede e tem programa de afiliados. Isso já está configurado.
+
+> **Nota de revisão.** Uma versão anterior deste documento afirmava que nenhuma plataforma
+> de trade com afiliados rodava na Arc. Estava errado — o GMGN roda, e a correção veio do
+> dono do canal, que é VIP na plataforma. O resto do documento foi reescrito a partir disso.
 
 ---
 
-## O problema de timing
+## Alavanca 1 — GMGN (configurado, ativa na mainnet)
 
-Links de referral só pagam se existir uma plataforma com programa de afiliados **naquela
-rede**. Hoje, na Arc:
+Cada alerta publica dois links do GMGN, ambos com o referral:
 
-- Photon, BullX, Axiom, Trojan, Maestro, Banana Gun — todos operam em Solana e nas EVMs
-  grandes. **Nenhum anunciou suporte à Arc.**
-- DexScreener, DEXTools, GeckoTerminal ainda **não indexam a Arc**, então nem link de
-  gráfico existe (e esses, de qualquer forma, não pagam comissão).
-- A Arc é uma L1 institucional da Circle, desenhada para liquidação de stablecoin. É
-  plausível que o ecossistema de trading bot de memecoin chegue lá — a testnet já tem
-  launchpad e tokens como `Fluffy` e `Grok` — mas **não dá para afirmar que chegará**, nem
-  quando.
+| Superfície | Template |
+| --- | --- |
+| Página do token | `https://gmgn.ai/{chain}/token/{ref}_{token}` |
+| Bot do Telegram | `https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}` |
 
-Isso não invalida o plano. Significa que a receita não começa pelos links de referral, e o
-projeto foi construído para isso: **quatro alavancas, ordenadas por quando cada uma passa a
-funcionar.**
+Formatos retirados da [documentação oficial](https://docs.gmgn.ai/index/referral-link). Vale
+manter os dois: quem lê o canal no celular converte melhor no bot do que abrindo o navegador.
 
----
+O link de `kind: "trade"` vai como **primeiro botão** do alerta, que é o que mais recebe clique.
 
-## Alavanca 1 — Tier premium (funciona no dia 1, não depende de ninguém)
+### Por que eles não aparecem em testnet
+
+Os dois estão restritos a `arc-mainnet` via `networks` em `config/referrals.json`. O GMGN
+indexa mainnet; publicá-los durante a calibração em testnet geraria 404 em todo alerta. Na
+testnet o alerta sai só com o explorer, e o `doctor` avisa exatamente por quê.
+
+### O que confirmar antes de tirar o DRY_RUN
+
+O formato é oficial e o slug `arc` está confirmado pela página *ARC Trenches* do GMGN. O que
+**não** foi possível verificar ponta a ponta é abrir uma página real de token Arc no GMGN —
+a Arc Mainnet ainda não está no ar, e o `gmgn.ai` bloqueia acesso automatizado.
+
+Quando a mainnet subir: rode `npm run doctor`, **clique no link que ele imprime** e confirme
+que abre a página do token com o referral aplicado. É um minuto de trabalho que protege toda
+a receita do canal.
+
+## Alavanca 2 — Tier premium (funciona no dia 1, não depende de ninguém)
 
 A mais subestimada e a única que não depende de terceiros. Já está implementada.
 
@@ -48,7 +61,7 @@ histórico inútil e você perde o funil.
 Cobrança é manual no começo (Pix/cripto + adicionar ao canal). Só automatize quando o
 volume justificar — automatizar cobrança de dez assinantes é queimar semana de trabalho.
 
-## Alavanca 2 — Afiliado de corretora (funciona hoje, independe da Arc)
+## Alavanca 3 — Afiliado de corretora (funciona hoje, independe da Arc)
 
 Programas de afiliados de CEX (Binance, Bybit, OKX, Bitget) pagam percentual **vitalício**
 sobre a taxa de quem se cadastra pelo seu link, e não dependem de a Arc existir.
@@ -70,34 +83,37 @@ Ou como rodapé fixo em todo alerta:
 "footer": { "enabled": true, "text": "📈 Opere com taxa reduzida: https://..." }
 ```
 
-Costuma render mais que referral de DEX, porque a comissão é recorrente em vez de por trade.
+Complementa bem o GMGN: a comissão é recorrente sobre a taxa, em vez de por trade.
 
-## Alavanca 3 — Links de referral de trade (pronto, esperando plataforma)
+## Adicionar outra plataforma
 
-Toda a mecânica está feita. Quando uma plataforma com afiliados subir na Arc, você edita
-`config/referrals.json` e pronto — nada de código:
+É só editar `config/referrals.json` — nada de código:
 
 ```json
 {
-  "id": "trade_generic",
+  "id": "outra_plataforma",
   "label": "Comprar",
   "template": "https://plataforma.com/swap?chain={chainId}&outputCurrency={token}&ref={ref}",
   "ref": "SEU_CODIGO",
   "enabled": true,
   "verified": true,
-  "kind": "trade"
+  "kind": "trade",
+  "networks": ["arc-mainnet"]
 }
 ```
 
-Placeholders: `{token}`, `{pool}`, `{chainId}`, `{chain}`, `{ref}`.
+Placeholders: `{token}`, `{pool}`, `{chainId}`, `{chain}`, `{explorer}`, `{ref}`.
+`networks` vazio publica em todas as redes.
 
-Três proteções que já estão no código:
+Quatro proteções que já estão no código:
 
-1. Template com placeholder não preenchido (`SUA-PLATAFORMA.com`) **não é publicado** — link
-   quebrado no canal custa mais credibilidade do que vale.
+1. Template com placeholder de exemplo não preenchido (`SUA-PLATAFORMA.com`) **não é
+   publicado** — link quebrado no canal custa mais credibilidade do que vale.
 2. Link de trade sem `ref` **grita no log no boot**. Esse é o pior cenário possível: você
    entrega o volume e não recebe a comissão.
-3. Link de `kind: "trade"` vai **como primeiro botão**, que é o que mais recebe clique.
+3. Plataforma restrita a outra rede é **anunciada no boot e no `doctor`**, para você não
+   achar que quebrou quando o link não aparece.
+4. Link de `kind: "trade"` vai **como primeiro botão**, que é o que mais recebe clique.
 
 `npm run doctor` mostra as URLs finais, já preenchidas, para você conferir antes de publicar.
 

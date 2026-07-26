@@ -8,9 +8,17 @@ const ctx = {
   chainId: 5_042_002,
 };
 
-function builder(platforms: unknown[], footer?: { enabled: boolean; text: string }) {
+function builder(
+  platforms: unknown[],
+  footer?: { enabled: boolean; text: string },
+  env: { networkKey: string; explorerUrl?: string } = {
+    networkKey: 'arc-mainnet',
+    explorerUrl: 'https://arcscan.app',
+  },
+) {
   return new ReferralBuilder(
     referralsFileSchema.parse({ chainSlug: 'arc', platforms, ...(footer ? { footer } : {}) }),
+    env,
   );
 }
 
@@ -82,6 +90,73 @@ describe('ReferralBuilder', () => {
     expect(builder([], { enabled: false, text: 'oi' }).footer()).toBeNull();
     expect(builder([], { enabled: true, text: '   ' }).footer()).toBeNull();
     expect(builder([], { enabled: true, text: 'assine' }).footer()).toBe('assine');
+  });
+
+  it('não publica plataforma restrita a outra rede', () => {
+    // GMGN só indexa mainnet; publicar em testnet daria 404 em todo alerta.
+    const links = builder(
+      [
+        {
+          id: 'gmgn_web',
+          label: 'GMGN',
+          template: 'https://gmgn.ai/{chain}/token/{ref}_{token}',
+          ref: 'Pinguim',
+          enabled: true,
+          kind: 'trade',
+          networks: ['arc-mainnet'],
+        },
+      ],
+      undefined,
+      { networkKey: 'arc-testnet' },
+    ).build(ctx);
+    expect(links).toHaveLength(0);
+  });
+
+  it('publica plataforma quando a rede ativa está na lista', () => {
+    const links = builder([
+      {
+        id: 'gmgn_web',
+        label: 'GMGN',
+        template: 'https://gmgn.ai/{chain}/token/{ref}_{token}',
+        ref: 'Pinguim',
+        enabled: true,
+        kind: 'trade',
+        networks: ['arc-mainnet'],
+      },
+    ]).build(ctx);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.monetized).toBe(true);
+  });
+
+  it('lista vazia de redes publica em qualquer rede', () => {
+    const platform = {
+      id: 'x',
+      label: 'X',
+      template: 'https://x/{token}',
+      enabled: true,
+      kind: 'other',
+      networks: [],
+    };
+    expect(builder([platform], undefined, { networkKey: 'qualquer-rede' }).build(ctx)).toHaveLength(1);
+  });
+
+  it('resolve {explorer} a partir da rede, não do JSON de links', () => {
+    // Host de explorer escrito à mão continuaria apontando para a testnet na migração.
+    const links = builder(
+      [{ id: 'exp', label: 'Explorer', template: '{explorer}/token/{token}', enabled: true, kind: 'explorer' }],
+      undefined,
+      { networkKey: 'arc-mainnet', explorerUrl: 'https://arcscan.app' },
+    ).build(ctx);
+    expect(links[0]?.url).toBe(`https://arcscan.app/token/${ctx.token}`);
+  });
+
+  it('omite o link quando a rede não tem explorer configurado', () => {
+    const links = builder(
+      [{ id: 'exp', label: 'Explorer', template: '{explorer}/token/{token}', enabled: true, kind: 'explorer' }],
+      undefined,
+      { networkKey: 'arc-mainnet' },
+    ).build(ctx);
+    expect(links).toHaveLength(0);
   });
 
   it('avisa no log quando um link de trade sai sem referral', () => {
