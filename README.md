@@ -146,13 +146,21 @@ intencional: alertar na rede errada é pior do que não alertar.
 ## Operação
 
 ```bash
-npm test            # 92 testes unitários
+npm test            # 108 testes unitários
 npm run typecheck
 npm run build       # -> dist/
 docker compose up -d
 ```
 
-Estado fica em `data/*.sqlite` (um arquivo por bot). O checkpoint só avança **depois** que
+O CI (GitHub Actions) roda typecheck, testes, build, um smoke test de que os dois
+entrypoints compilados carregam, e o build da imagem Docker verificando que ela enxerga
+`config/`.
+
+Rodando direto com `npm`, o estado fica em `data/*.sqlite` (um arquivo por bot). No Docker
+fica em volume nomeado — bind mount de `./data` daria erro de permissão, já que o container
+roda como usuário `node`. Para backup: `docker cp arc-signals:/app/data ./backup`.
+
+O checkpoint só avança **depois** que
 o lote é processado, então um crash reprocessa em vez de pular alertas — os índices únicos
 garantem que reprocessar não duplique nada. Reorgs são detectados por hash e revertidos.
 

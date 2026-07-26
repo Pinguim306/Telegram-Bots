@@ -14,6 +14,11 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
+# tsc/vitest/tsx/esbuild só servem para construir. Removê-los aqui tira ~150 MB da
+# imagem final, que copia node_modules já pronto (o binding nativo do better-sqlite3
+# foi compilado contra a mesma base node:22-slim, então a ABI continua válida).
+RUN npm prune --omit=dev
+
 
 FROM node:22-slim AS runtime
 
