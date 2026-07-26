@@ -30,15 +30,14 @@
       "networks": ["arc-mainnet"],
       "$note": [
         "ESTE E O LINK QUE PAGA.",
-        "Formato retirado da documentacao oficial: docs.gmgn.ai/index/referral-link",
+        "Formato da documentacao oficial: docs.gmgn.ai/index/referral-link",
         "  Token Page: https://gmgn.ai/{Chain}/token/{ReferralCode}_{TokenContract}",
         "Slug 'arc' confirmado pela pagina ARC Trenches em gmgn.ai/?chain=arc.",
+        "Estrutura confirmada como funcional pelo dono da conta, que e VIP no GMGN.",
         "",
-        "O QUE NAO FOI POSSIVEL VERIFICAR PONTA A PONTA: abrir uma pagina real de token",
-        "Arc no GMGN, porque a Arc Mainnet ainda nao esta no ar e o gmgn.ai bloqueia",
-        "acesso automatizado (403). Assim que a mainnet subir, rode `npm run doctor`,",
-        "clique no link que ele imprime e confirme que abre a pagina do token com o",
-        "referral aplicado ANTES de tirar o DRY_RUN."
+        "Se um dia o GMGN mudar o formato, o sintoma e traicoeiro: o link continua",
+        "abrindo e so para de creditar a comissao. Por isso test/config.test.ts trava a",
+        "URL exata gerada a partir deste arquivo -- mexer aqui quebra o teste de proposito."
       ]
     },
     {

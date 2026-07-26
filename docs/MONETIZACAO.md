@@ -18,8 +18,9 @@ Cada alerta publica dois links do GMGN, ambos com o referral:
 | Página do token | `https://gmgn.ai/{chain}/token/{ref}_{token}` |
 | Bot do Telegram | `https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}` |
 
-Formatos retirados da [documentação oficial](https://docs.gmgn.ai/index/referral-link). Vale
-manter os dois: quem lê o canal no celular converte melhor no bot do que abrindo o navegador.
+Formatos retirados da [documentação oficial](https://docs.gmgn.ai/index/referral-link) e
+**confirmados como funcionais pelo dono da conta**, que é VIP no GMGN. Vale manter os dois:
+quem lê o canal no celular converte melhor no bot do que abrindo o navegador.
 
 O link de `kind: "trade"` vai como **primeiro botão** do alerta, que é o que mais recebe clique.
 
@@ -29,15 +30,15 @@ Os dois estão restritos a `arc-mainnet` via `networks` em `config/referrals.jso
 indexa mainnet; publicá-los durante a calibração em testnet geraria 404 em todo alerta. Na
 testnet o alerta sai só com o explorer, e o `doctor` avisa exatamente por quê.
 
-### O que confirmar antes de tirar o DRY_RUN
+### Se o GMGN mudar o formato
 
-O formato é oficial e o slug `arc` está confirmado pela página *ARC Trenches* do GMGN. O que
-**não** foi possível verificar ponta a ponta é abrir uma página real de token Arc no GMGN —
-a Arc Mainnet ainda não está no ar, e o `gmgn.ai` bloqueia acesso automatizado.
+O modo de falha aqui é traiçoeiro: um formato desatualizado **continua abrindo a página** e
+só para de creditar a comissão. Você não veria erro nenhum no canal — só um extrato de
+afiliado menor do que deveria, semanas depois.
 
-Quando a mainnet subir: rode `npm run doctor`, **clique no link que ele imprime** e confirme
-que abre a página do token com o referral aplicado. É um minuto de trabalho que protege toda
-a receita do canal.
+Por isso `test/config.test.ts` trava a URL exata gerada a partir de `config/referrals.json`.
+Editar o template sem atualizar o teste quebra o build de propósito. Se o GMGN anunciar
+mudança no formato de referral, ajuste os dois juntos.
 
 ## Alavanca 2 — Tier premium (funciona no dia 1, não depende de ninguém)
 

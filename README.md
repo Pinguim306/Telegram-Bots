@@ -46,6 +46,10 @@ https://gmgn.ai/{chain}/token/{ref}_{token}
 https://t.me/gmgnaibot?start=i_{ref}_{chain}_{token}
 ```
 
+A estrutura foi confirmada como funcional pelo dono da conta. `test/config.test.ts` trava a
+URL exata gerada a partir do config — se o formato mudar, o build quebra, em vez de o link
+seguir abrindo e parar de creditar comissão em silêncio.
+
 **Esses links só publicam em `arc-mainnet`**, por `networks` em `config/referrals.json`.
 O GMGN indexa mainnet; publicá-los durante a calibração em testnet geraria 404 em todo
 alerta. Na testnet o alerta sai só com o explorer, e o `doctor` explica exatamente por quê.
@@ -205,10 +209,6 @@ mas **não é requisito para acompanhar a chain em tempo real**.
 - **Idade do token pode ser desconhecida** se o RPC não for archive. Nesse caso ela aparece
   como "desconhecida" e as regras de idade não se aplicam — em vez de o bot inventar um número.
 - Os limiares padrão foram calibrados contra a **testnet**. Revise no primeiro dia de mainnet.
-- **Os links do GMGN não foram testados ponta a ponta.** O formato é o oficial e o slug
-  `arc` está confirmado, mas não foi possível abrir uma página real de token Arc no GMGN —
-  a mainnet não está no ar e o site bloqueia acesso automatizado. Antes de tirar o
-  `DRY_RUN`, rode `npm run doctor` e clique no link que ele imprime.
 
 ---
 
