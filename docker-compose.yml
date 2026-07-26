@@ -1,0 +1,40 @@
+services:
+  launches:
+    build: .
+    image: arc-telegram-bots
+    container_name: arc-launches
+    restart: unless-stopped
+    command: ["node", "dist/bots/launches/index.js"]
+    env_file: .env
+    volumes:
+      # Volume nomeado, não bind mount: a imagem roda como usuário `node` (uid 1000)
+      # e um diretório ./data criado pelo Docker pertenceria a root — o bot subiria
+      # e morreria sem conseguir escrever o SQLite. O volume nomeado herda a
+      # propriedade correta da imagem. Para inspecionar ou fazer backup:
+      #   docker cp arc-launches:/app/data ./backup-launches
+      - launches-data:/app/data
+      # config/ é bind mount somente leitura: ajustar limiares e códigos de
+      # referral sem rebuild, e sem problema de permissão por ser :ro.
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  signals:
+    build: .
+    image: arc-telegram-bots
+    container_name: arc-signals
+    restart: unless-stopped
+    command: ["node", "dist/bots/signals/index.js"]
+    env_file: .env
+    volumes:
+      # Banco próprio: reiniciar ou apagar o estado de um bot não afeta o outro.
+      - signals-data:/app/data
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  launches-data:
+  signals-data:

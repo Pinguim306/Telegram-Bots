@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "O scanner NAO depende de uma lista de factories conhecidas. Ele filtra os logs da rede",
+    "inteira por topic0 (assinatura do evento) e descobre factories e pools sozinho.",
+    "Isso e proposital: a Arc e uma rede nova, ninguem sabe quais DEXes vao subir nela.",
+    "",
+    "'factoryLabels' e so cosmetico: da nome bonito a factories ja conhecidas no alerta.",
+    "'factoryAllowlist' vazio = aceita qualquer factory. Preencha se quiser restringir.",
+    "'factoryDenylist' bloqueia factories especificas (util contra spam de fork).",
+    "",
+    "Verificado no RPC da Arc testnet em 2026-07-26: ha atividade de swap V3 (281 logs/5k blocos)",
+    "e V2 (1564 logs/5k blocos), e uma factory V3 em 0xba27c71bf06ab69723d9bd7c96f13d591fd53a93."
+  ],
+  "factoryLabels": {
+    "0xba27c71bf06ab69723d9bd7c96f13d591fd53a93": "ArcSwap V3"
+  },
+  "factoryAllowlist": [],
+  "factoryDenylist": [],
+  "tokenDenylist": []
+}

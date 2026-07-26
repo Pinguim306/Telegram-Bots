@@ -1,0 +1,43 @@
+{
+  "$comment": [
+    "Regras do bot de novos launches.",
+    "",
+    "Por padrão o alerta sai quando aparece um POOL negociável, nao quando um token e",
+    "criado. Sao coisas diferentes: qualquer um cria um ERC-20 de graca, e a maioria",
+    "nunca recebe liquidez. Alertar criacao de token entope o canal com lixo.",
+    "Se quiser ver as criacoes tambem (util para caçar pre-launch), ligue alertOnNewToken."
+  ],
+  "alertOnNewPool": true,
+  "alertOnNewToken": false,
+
+  "$comment_liquidez": [
+    "DOIS filtros de liquidez, porque sao coisas diferentes -- e isso foi medido na Arc,",
+    "nao suposto. Os launches de la saem de launchpad estilo bonding curve: o pool nasce",
+    "com token e ZERO USDC, e o USDC so entra conforme as pessoas compram.",
+    "",
+    "  minPoolValueUsd      -> tamanho do pool (token + USDC a preco spot).",
+    "                          E o filtro anti-lixo: pool vazio de verdade nao passa.",
+    "  minQuoteLiquidityUsd -> USDC de verdade no pool, o unico dinheiro contra o qual",
+    "                          da para vender. Deixe 0 para pegar launch no minuto zero;",
+    "                          suba se voce so quer alertar o que ja da para sair.",
+    "",
+    "Se voce colocar minQuoteLiquidityUsd alto, o bot vira um bot de 'token que ja bombou',",
+    "nao de launch. Essa e a escolha, e ela e sua."
+  ],
+  "minPoolValueUsd": 250,
+  "minQuoteLiquidityUsd": 0,
+
+  "maxRiskScore": 100,
+  "requireMetadata": true,
+  "maxAlertsPerHour": 30,
+  "trackedTokenMaxAgeSec": 604800,
+
+  "$comment2": [
+    "Pool quase nunca nasce com liquidez: o deploy cria o pool e uma tx seguinte",
+    "adiciona o dinheiro. Por isso um pool abaixo do minimo nao e descartado --",
+    "ele entra numa fila e e reavaliado a cada pendingRecheckSec ate pendingWindowSec.",
+    "Sem isso o bot perde exatamente os launches que importam."
+  ],
+  "pendingRecheckSec": 20,
+  "pendingWindowSec": 1800
+}
