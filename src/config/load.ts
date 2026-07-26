@@ -45,8 +45,11 @@ export function loadNetwork(key = process.env.NETWORK ?? 'arc-testnet'): Resolve
     throw new Error(`Rede "${key}" não existe em config/networks.json. Disponíveis: ${available}`);
   }
 
+  // Env tem precedência sobre o JSON, igual ao que já valia para o RPC. O contrário
+  // seria uma armadilha: você define ARC_MAINNET_CHAIN_ID e o valor é ignorado
+  // silenciosamente porque o arquivo também traz um.
   const chainIdFromEnv = envOrUndefined(raw.chainIdEnv);
-  const chainId = raw.chainId ?? (chainIdFromEnv ? Number(chainIdFromEnv) : undefined);
+  const chainId = chainIdFromEnv ? Number(chainIdFromEnv) : raw.chainId;
 
   // O override vale para qualquer rede — é como se aponta para um RPC pago.
   const override = envOrUndefined('RPC_URL_OVERRIDE');
@@ -85,6 +88,7 @@ export function loadNetwork(key = process.env.NETWORK ?? 'arc-testnet'): Resolve
     confirmations: raw.confirmations,
     maxBlockRange: raw.maxBlockRange,
     quoteTokens: raw.quoteTokens,
+    rateLimit: raw.rateLimit,
   };
 }
 

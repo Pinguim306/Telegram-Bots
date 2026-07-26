@@ -55,7 +55,9 @@ export class ChainClient {
 
   constructor(network: ResolvedNetwork, limiter?: Limiter) {
     this.network = network;
-    this.limiter = limiter ?? new Limiter();
+    // Cada rede pode apertar o passo: o gateway público da Arc mainnet responde
+    // 429 muito antes do que o RPC da testnet aguenta.
+    this.limiter = limiter ?? new Limiter(network.rateLimit ?? {});
 
     const chain = defineChain({
       id: network.chainId,

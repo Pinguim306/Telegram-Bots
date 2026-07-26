@@ -37,17 +37,36 @@ describe('config/networks.json', () => {
     expect(loadNetwork('arc-testnet').quoteTokens.length).toBeGreaterThan(0);
   });
 
-  it('falha de forma explícita em arc-mainnet enquanto as vars não existem', () => {
-    // Comportamento intencional e documentado: alertar na rede errada é pior
-    // do que não alertar. Este teste trava essa garantia.
-    const semEnv = { ...process.env };
-    delete semEnv.ARC_MAINNET_RPC_URL;
-    delete semEnv.ARC_MAINNET_CHAIN_ID;
-    delete semEnv.RPC_URL_OVERRIDE;
+  it('carrega arc-mainnet com os valores verificados on-chain', () => {
+    // Verificado contra a mainnet: chainId 5042 e o USDC em 0x3600...0000 com
+    // 6 decimals — a mesma impressão digital da testnet, que é o que confirma
+    // que a rede é a Arc e não outra chain qualquer com o mesmo nome.
+    const net = loadNetwork('arc-mainnet');
+    expect(net.chainId).toBe(5042);
+    expect(net.rpcUrls.length).toBeGreaterThan(0);
+    const usdc = net.quoteTokens.find((q) => q.symbol === 'USDC');
+    expect(usdc?.address).toBe('0x3600000000000000000000000000000000000000');
+    expect(usdc?.decimals).toBe(6);
+  });
+
+  it('não define explorer na mainnet — ela ainda não tem um', () => {
+    // O alerta precisa continuar saindo sem link de explorer, sem quebrar.
+    expect(loadNetwork('arc-mainnet').explorerUrl).toBeUndefined();
+  });
+
+  it('aperta o limite de RPC na mainnet, cujo gateway público devolve 429', () => {
+    const mainnet = loadNetwork('arc-mainnet');
+    const testnet = loadNetwork('arc-testnet');
+    expect(mainnet.rateLimit).toBeDefined();
+    expect(mainnet.rateLimit!.ratePerSec).toBeLessThan(testnet.rateLimit?.ratePerSec ?? 12);
+  });
+
+  it('deixa o env sobrescrever o chain id do arquivo', () => {
+    // O contrário seria armadilha: definir a variável e ela ser ignorada em silêncio.
     const original = process.env;
-    process.env = semEnv;
+    process.env = { ...original, ARC_MAINNET_CHAIN_ID: '999' };
     try {
-      expect(() => loadNetwork('arc-mainnet')).toThrow(/incompleta/);
+      expect(loadNetwork('arc-mainnet').chainId).toBe(999);
     } finally {
       process.env = original;
     }

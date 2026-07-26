@@ -140,17 +140,28 @@ comprar, não dá para vender"*. Um bot que esconde isso queima a audiência em 
 | `config/signals.json` | Janelas, regras, pontos e cortes do bot de sinais |
 | `config/dex.json` | Rótulos de factory, listas de permissão/bloqueio |
 
-### Migrar para a mainnet
+### Mainnet
+
+Já configurada em `config/networks.json`. No `.env` basta:
 
 ```bash
 NETWORK=arc-mainnet
-ARC_MAINNET_RPC_URL=https://...
-ARC_MAINNET_CHAIN_ID=...
-ARC_MAINNET_EXPLORER=https://...
 ```
 
-Sem essas variáveis, `NETWORK=arc-mainnet` **falha no boot com mensagem explícita**. É
-intencional: alertar na rede errada é pior do que não alertar.
+Verificado on-chain: chain id **5042**, USDC em `0x3600…0000` com **6 decimals** — a mesma
+impressão digital da testnet, que é o que confirma que a rede é a Arc. As variáveis
+`ARC_MAINNET_*` continuam existindo, mas só para **sobrescrever** o arquivo; env tem
+precedência.
+
+A mainnet **ainda não tem block explorer público**. Os alertas saem sem link de explorer
+(o código lida com isso). Quando existir, defina `ARC_MAINNET_EXPLORER` e o link volta sozinho.
+
+> ⚠️ **O RPC padrão da mainnet não serve para produção.**
+> `https://5042.rpc.thirdweb.com` é um gateway público e devolveu 429 já na terceira
+> chamada durante a verificação — o `doctor` não consegue nem ler `eth_blockNumber`.
+> Pegue uma chave gratuita da thirdweb (`https://5042.rpc.thirdweb.com/SEU_CLIENT_ID`) ou
+> um RPC dedicado, e aponte `RPC_URL_OVERRIDE` para ele. Depois suba `rateLimit` em
+> `config/networks.json` de `2 / 3` para `4 / 12`.
 
 ---
 
