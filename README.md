@@ -157,8 +157,24 @@ o lote é processado, então um crash reprocessa em vez de pular alertas — os 
 garantem que reprocessar não duplique nada. Reorgs são detectados por hash e revertidos.
 
 O RPC público da Arc responde `-32011 request limit reached` sob carga; o cliente tem token
-bucket, limite de concorrência, backoff com jitter e failover entre RPCs. Para produção,
-use um RPC pago em `RPC_URL_OVERRIDE`.
+bucket, limite de concorrência, backoff com jitter e failover entre RPCs.
+
+### Throughput medido
+
+Os dois bots rodando **ao mesmo tempo**, contra o **RPC público gratuito**, partindo 4.000
+blocos atrás da cabeça da chain:
+
+| | Launches | Signals |
+| --- | --- | --- |
+| Taxa média | **34,4 blocos/s** | **33,8 blocos/s** |
+| Atraso inicial → final | 4.003 → **0** | 4.003 → **0** |
+| Tempo para zerar o atraso | ~10s | ~10s |
+| Erros de rate limit | 0 | 0 |
+
+A Arc produz 2 blocos/s, então há **~17× de folga**. Os dois alcançaram a cabeça da chain em
+três lotes e ficaram com atraso zero pelo resto da medição (186s). Um RPC pago em
+`RPC_URL_OVERRIDE` é recomendável para produção séria — redundância e cotas garantidas —
+mas **não é requisito para acompanhar a chain em tempo real**.
 
 ---
 
