@@ -231,7 +231,9 @@ export class TraderEngine {
           'Posição fechada',
         );
       } else {
-        markTookProfit(this.db, pos.id);
+        // Só a venda parcial do TAKE PROFIT desarma o take profit futuro — uma
+        // venda manual parcial não pode roubar o TP da posição que continua.
+        if (reason.startsWith('take profit')) markTookProfit(this.db, pos.id);
         this.log.info(
           { mint: pos.mint, symbol: pos.symbol, reason, portionPct },
           'Venda parcial executada',

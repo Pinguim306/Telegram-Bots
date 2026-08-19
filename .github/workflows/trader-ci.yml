@@ -1,0 +1,55 @@
+name: Trader CI
+
+# CI do projeto apartado memecoin-trader/. Só roda quando ele muda, para não
+# gastar runner nem poluir os checks dos bots de alerta.
+on:
+  push:
+    branches: [main]
+    paths: ['memecoin-trader/**', '.github/workflows/trader-ci.yml']
+  pull_request:
+    paths: ['memecoin-trader/**', '.github/workflows/trader-ci.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trader-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: memecoin-trader
+
+jobs:
+  verify:
+    name: Typecheck, testes e build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: memecoin-trader/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Testes
+        # Inclui test/config.test.ts, que valida o config/trader.json real e
+        # trava limiares incoerentes. Tudo offline — nenhum teste toca rede.
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Conferir que o CLI compilado carrega
+        # `--help` não toca rede nem banco; o que se valida é que o JS compilado
+        # resolve todos os imports (extensão .js faltando aparece aqui, não em runtime).
+        run: |
+          saida=$(node dist/cli.js --help)
+          echo "$saida"
+          grep -q "memecoin-trader" <<<"$saida"

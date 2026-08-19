@@ -200,6 +200,21 @@ describe('TraderEngine', () => {
     expect(closed[0]!.exitReason).toContain('sem dados');
   });
 
+  it('venda manual parcial não desarma o take profit da posição', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+
+    await engine.manualSell(MINT, 30);
+    const after = listOpenPositions(db, 'paper');
+    expect(after).toHaveLength(1);
+    expect(after[0]!.tookProfit).toBe(false);
+    expect(after[0]!.tokensQty).toBeLessThan(after[0]!.tokensBought);
+  });
+
   it('sem preço do SOL (e sem fallback), o tick inteiro é pulado', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const sources = fakeSources(state);
