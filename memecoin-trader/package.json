@@ -1,0 +1,35 @@
+{
+  "name": "memecoin-trader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bot pessoal de trading de memecoins na Solana: descoberta por tendência, análise de risco de rug/holders e execução via Jupiter — com modo paper por padrão",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "trader": "tsx src/cli.ts",
+    "doctor": "tsx src/cli.ts doctor",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "better-sqlite3": "^13.0.1",
+    "bs58": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "pino": "^10.0.0",
+    "pino-pretty": "^13.1.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.18.9",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

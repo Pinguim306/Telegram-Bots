@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+!.env.example
+*.log
+coverage/

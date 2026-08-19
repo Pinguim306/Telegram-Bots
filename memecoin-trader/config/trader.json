@@ -1,0 +1,92 @@
+{
+  "$comment": "Todos os limiares do bot. O schema (src/config.ts) valida este arquivo no boot e o teste de config trava valores incoerentes.",
+
+  "loop": {
+    "tickSec": 30,
+    "candidatesPerTick": 3,
+    "tokenCooldownMin": 90
+  },
+
+  "discovery": {
+    "geckoTrending": true,
+    "geckoNew": true,
+    "dexscreenerBoosts": true,
+    "maxCandidatesPerTick": 30,
+    "excludeMints": [
+      "So11111111111111111111111111111111111111112",
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",
+      "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj",
+      "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
+      "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+    ]
+  },
+
+  "entry": {
+    "gates": {
+      "minLiquidityUsd": 30000,
+      "maxLiquidityUsd": 0,
+      "minVolume1hUsd": 25000,
+      "minAgeMin": 60,
+      "maxAgeHours": 720,
+      "minTxns1h": 60,
+      "minBuyRatio1h": 0.5,
+      "maxMarketCapUsd": 100000000
+    },
+    "minScore": 50,
+    "rules": [
+      { "id": "momentum_5m", "label": "Momentum 5m", "points": 15, "params": { "minPct": 1.5 } },
+      { "id": "momentum_1h", "label": "Momentum 1h", "points": 20, "params": { "minPct": 5 } },
+      { "id": "volume_spike", "label": "Spike de volume 1h", "points": 25, "params": { "minMultiple": 3 } },
+      { "id": "buy_pressure", "label": "Pressão compradora 1h", "points": 20, "params": { "minRatio": 0.6, "minBuys": 30 } },
+      { "id": "turnover", "label": "Giro sobre a liquidez", "points": 10, "params": { "minRatio": 2 } },
+      { "id": "trending", "label": "Trending nas fontes", "points": 10, "params": {} }
+    ]
+  },
+
+  "risk": {
+    "maxScore": 40,
+    "vetoMintAuthority": true,
+    "vetoFreezeAuthority": true,
+    "vetoToken2022": false,
+    "vetoRugcheckDanger": true,
+    "requireRugcheck": false,
+    "requireOnchain": true,
+    "maxTop1Pct": 20,
+    "maxTop10Pct": 50,
+    "minLpLockedPct": 50,
+    "maxRugcheckScore": 60,
+    "minHolderCount": 200,
+    "rugcheckTimeoutMs": 8000
+  },
+
+  "sizing": {
+    "positionPctOfBalance": 5,
+    "maxPositionSol": 0.25,
+    "minPositionSol": 0.01,
+    "maxOpenPositions": 5,
+    "reserveSol": 0.05,
+    "maxDailyLossSol": 0.5,
+    "riskScaling": true,
+    "paperStartBalanceSol": 5
+  },
+
+  "exit": {
+    "stopLossPct": 20,
+    "takeProfitPct": 40,
+    "takeProfitSellPct": 50,
+    "trailingActivatePct": 25,
+    "trailingStopPct": 15,
+    "maxHoldMin": 240,
+    "liquidityDrainPct": 50,
+    "staleTicksToExit": 5
+  },
+
+  "execution": {
+    "slippageBps": 300,
+    "maxPriorityFeeLamports": 2000000,
+    "confirmTimeoutSec": 90,
+    "paperSlippagePct": 1.5
+  }
+}

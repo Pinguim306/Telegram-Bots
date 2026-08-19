@@ -1,0 +1,469 @@
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import Database from 'better-sqlite3';
+import type { BuyFill, SellFill, TradeMode } from './types.js';
+
+export type Db = Database.Database;
+
+/**
+ * Estado local em SQLite. Posições, ordens, histórico de avaliação de token e
+ * estatística diária (que sustenta o circuit breaker de perda).
+ *
+ * Posições paper e live convivem no mesmo arquivo, separadas pela coluna `mode` —
+ * trocar de modo não faz o bot "enxergar" posições do outro modo.
+ */
+export function openTraderDb(dataDir: string): Db {
+  mkdirSync(dataDir, { recursive: true });
+  const db = new Database(resolve(dataDir, 'trader.sqlite'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
+  migrate(db);
+  return db;
+}
+
+function migrate(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS positions (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      mode                TEXT NOT NULL,
+      chain               TEXT NOT NULL,
+      mint                TEXT NOT NULL,
+      symbol              TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'open',
+      entry_ts            INTEGER NOT NULL,
+      entry_price_usd     REAL NOT NULL,
+      entry_liquidity_usd REAL NOT NULL,
+      entry_score         REAL NOT NULL DEFAULT 0,
+      entry_risk_score    REAL NOT NULL DEFAULT 0,
+      entry_reasons       TEXT NOT NULL DEFAULT '',
+      sol_spent           REAL NOT NULL,
+      usd_spent           REAL NOT NULL,
+      tokens_bought       REAL NOT NULL,
+      tokens_qty          REAL NOT NULL,
+      peak_price_usd      REAL NOT NULL,
+      last_price_usd      REAL NOT NULL DEFAULT 0,
+      took_profit         INTEGER NOT NULL DEFAULT 0,
+      stale_ticks         INTEGER NOT NULL DEFAULT 0,
+      sol_received        REAL NOT NULL DEFAULT 0,
+      usd_received        REAL NOT NULL DEFAULT 0,
+      exit_ts             INTEGER,
+      exit_price_usd      REAL,
+      exit_reason         TEXT,
+      pnl_sol             REAL,
+      pnl_usd             REAL,
+      pnl_pct             REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(mode, status);
+    CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint, status);
+
+    CREATE TABLE IF NOT EXISTS orders (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_id  INTEGER,
+      ts           INTEGER NOT NULL,
+      mode         TEXT NOT NULL,
+      side         TEXT NOT NULL,
+      mint         TEXT NOT NULL,
+      sol_amount   REAL NOT NULL DEFAULT 0,
+      token_amount REAL NOT NULL DEFAULT 0,
+      price_usd    REAL NOT NULL DEFAULT 0,
+      tx_sig       TEXT,
+      ok           INTEGER NOT NULL,
+      error        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
+
+    CREATE TABLE IF NOT EXISTS token_log (
+      mint           TEXT PRIMARY KEY,
+      symbol         TEXT,
+      first_seen_ts  INTEGER NOT NULL,
+      last_eval_ts   INTEGER NOT NULL,
+      risk_score     REAL,
+      verdict        TEXT,
+      flags_json     TEXT,
+      cooldown_until INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_stats (
+      day              TEXT PRIMARY KEY,
+      realized_pnl_sol REAL NOT NULL DEFAULT 0,
+      realized_pnl_usd REAL NOT NULL DEFAULT 0,
+      trades           INTEGER NOT NULL DEFAULT 0,
+      wins             INTEGER NOT NULL DEFAULT 0,
+      losses           INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  kv
+// ─────────────────────────────────────────────────────────────
+
+export function kvGet(db: Db, key: string): string | null {
+  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
+export function kvSet(db: Db, key: string, value: string): void {
+  db.prepare(
+    'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run(key, value);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Posições
+// ─────────────────────────────────────────────────────────────
+
+export interface Position {
+  id: number;
+  mode: TradeMode;
+  chain: string;
+  mint: string;
+  symbol: string;
+  status: 'open' | 'closed';
+  entryTs: number;
+  entryPriceUsd: number;
+  entryLiquidityUsd: number;
+  entryScore: number;
+  entryRiskScore: number;
+  entryReasons: string;
+  solSpent: number;
+  usdSpent: number;
+  tokensBought: number;
+  tokensQty: number;
+  peakPriceUsd: number;
+  /** Último preço visto no indexador — é o preço usado se o token sumir de lá. */
+  lastPriceUsd: number;
+  tookProfit: boolean;
+  staleTicks: number;
+  solReceived: number;
+  usdReceived: number;
+  exitTs: number | null;
+  exitPriceUsd: number | null;
+  exitReason: string | null;
+  pnlSol: number | null;
+  pnlUsd: number | null;
+  pnlPct: number | null;
+}
+
+interface PositionRow {
+  id: number;
+  mode: string;
+  chain: string;
+  mint: string;
+  symbol: string;
+  status: string;
+  entry_ts: number;
+  entry_price_usd: number;
+  entry_liquidity_usd: number;
+  entry_score: number;
+  entry_risk_score: number;
+  entry_reasons: string;
+  sol_spent: number;
+  usd_spent: number;
+  tokens_bought: number;
+  tokens_qty: number;
+  peak_price_usd: number;
+  last_price_usd: number;
+  took_profit: number;
+  stale_ticks: number;
+  sol_received: number;
+  usd_received: number;
+  exit_ts: number | null;
+  exit_price_usd: number | null;
+  exit_reason: string | null;
+  pnl_sol: number | null;
+  pnl_usd: number | null;
+  pnl_pct: number | null;
+}
+
+function mapPosition(row: PositionRow): Position {
+  return {
+    id: row.id,
+    mode: row.mode as TradeMode,
+    chain: row.chain,
+    mint: row.mint,
+    symbol: row.symbol,
+    status: row.status as 'open' | 'closed',
+    entryTs: row.entry_ts,
+    entryPriceUsd: row.entry_price_usd,
+    entryLiquidityUsd: row.entry_liquidity_usd,
+    entryScore: row.entry_score,
+    entryRiskScore: row.entry_risk_score,
+    entryReasons: row.entry_reasons,
+    solSpent: row.sol_spent,
+    usdSpent: row.usd_spent,
+    tokensBought: row.tokens_bought,
+    tokensQty: row.tokens_qty,
+    peakPriceUsd: row.peak_price_usd,
+    lastPriceUsd: row.last_price_usd,
+    tookProfit: row.took_profit === 1,
+    staleTicks: row.stale_ticks,
+    solReceived: row.sol_received,
+    usdReceived: row.usd_received,
+    exitTs: row.exit_ts,
+    exitPriceUsd: row.exit_price_usd,
+    exitReason: row.exit_reason,
+    pnlSol: row.pnl_sol,
+    pnlUsd: row.pnl_usd,
+    pnlPct: row.pnl_pct,
+  };
+}
+
+export interface NewPosition {
+  mode: TradeMode;
+  chain: string;
+  mint: string;
+  symbol: string;
+  entryTs: number;
+  entryLiquidityUsd: number;
+  entryScore: number;
+  entryRiskScore: number;
+  entryReasons: string;
+  fill: BuyFill;
+}
+
+export function insertPosition(db: Db, p: NewPosition): Position {
+  const result = db
+    .prepare(
+      `INSERT INTO positions (mode, chain, mint, symbol, status, entry_ts, entry_price_usd,
+         entry_liquidity_usd, entry_score, entry_risk_score, entry_reasons,
+         sol_spent, usd_spent, tokens_bought, tokens_qty, peak_price_usd, last_price_usd)
+       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      p.mode,
+      p.chain,
+      p.mint,
+      p.symbol,
+      p.entryTs,
+      p.fill.priceUsd,
+      p.entryLiquidityUsd,
+      p.entryScore,
+      p.entryRiskScore,
+      p.entryReasons,
+      p.fill.solSpent,
+      p.fill.usdSpent,
+      p.fill.tokensQty,
+      p.fill.tokensQty,
+      p.fill.priceUsd,
+      p.fill.priceUsd,
+    );
+  return getPosition(db, Number(result.lastInsertRowid))!;
+}
+
+export function getPosition(db: Db, id: number): Position | null {
+  const row = db.prepare('SELECT * FROM positions WHERE id = ?').get(id) as PositionRow | undefined;
+  return row ? mapPosition(row) : null;
+}
+
+export function listOpenPositions(db: Db, mode: TradeMode): Position[] {
+  const rows = db
+    .prepare("SELECT * FROM positions WHERE mode = ? AND status = 'open' ORDER BY entry_ts")
+    .all(mode) as PositionRow[];
+  return rows.map(mapPosition);
+}
+
+export function getOpenPositionByMint(db: Db, mode: TradeMode, mint: string): Position | null {
+  const row = db
+    .prepare("SELECT * FROM positions WHERE mode = ? AND mint = ? AND status = 'open' LIMIT 1")
+    .get(mode, mint) as PositionRow | undefined;
+  return row ? mapPosition(row) : null;
+}
+
+export function listClosedPositions(db: Db, mode: TradeMode, limit = 50): Position[] {
+  const rows = db
+    .prepare(
+      "SELECT * FROM positions WHERE mode = ? AND status = 'closed' ORDER BY exit_ts DESC LIMIT ?",
+    )
+    .all(mode, limit) as PositionRow[];
+  return rows.map(mapPosition);
+}
+
+/** Atualiza o estado de mercado da posição visto neste tick. */
+export function updateTickState(
+  db: Db,
+  id: number,
+  peakPriceUsd: number,
+  lastPriceUsd: number,
+  staleTicks: number,
+): void {
+  db.prepare(
+    'UPDATE positions SET peak_price_usd = ?, last_price_usd = ?, stale_ticks = ? WHERE id = ?',
+  ).run(peakPriceUsd, lastPriceUsd, staleTicks, id);
+}
+
+export function markTookProfit(db: Db, id: number): void {
+  db.prepare('UPDATE positions SET took_profit = 1 WHERE id = ?').run(id);
+}
+
+/**
+ * Aplica uma venda (parcial ou total) e fecha a posição quando ela zera.
+ *
+ * "Zerou" tem tolerância de poeira: vender 100% via arredondamento de float pode
+ * deixar 1e-9 tokens na conta; exigir zero exato deixaria a posição aberta para
+ * sempre com quantidade invendável.
+ */
+export function applySellFill(
+  db: Db,
+  position: Position,
+  fill: SellFill,
+  reason: string,
+  nowTs: number,
+): { position: Position; closed: boolean } {
+  const remaining = Math.max(0, position.tokensQty - fill.tokensSold);
+  const dustThreshold = position.tokensBought * 1e-6;
+  const closed = remaining <= dustThreshold;
+
+  const solReceived = position.solReceived + fill.solReceived;
+  const usdReceived = position.usdReceived + fill.usdReceived;
+
+  if (closed) {
+    const pnlSol = solReceived - position.solSpent;
+    const pnlUsd = usdReceived - position.usdSpent;
+    const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;
+    db.prepare(
+      `UPDATE positions SET tokens_qty = 0, sol_received = ?, usd_received = ?, status = 'closed',
+         exit_ts = ?, exit_price_usd = ?, exit_reason = ?, pnl_sol = ?, pnl_usd = ?, pnl_pct = ?
+       WHERE id = ?`,
+    ).run(solReceived, usdReceived, nowTs, fill.priceUsd, reason, pnlSol, pnlUsd, pnlPct, position.id);
+  } else {
+    db.prepare(
+      'UPDATE positions SET tokens_qty = ?, sol_received = ?, usd_received = ? WHERE id = ?',
+    ).run(remaining, solReceived, usdReceived, position.id);
+  }
+
+  return { position: getPosition(db, position.id)!, closed };
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Ordens (trilha de auditoria — inclusive as que falharam)
+// ─────────────────────────────────────────────────────────────
+
+export interface OrderRecord {
+  positionId: number | null;
+  ts: number;
+  mode: TradeMode;
+  side: 'buy' | 'sell';
+  mint: string;
+  solAmount: number;
+  tokenAmount: number;
+  priceUsd: number;
+  txSig: string | null;
+  ok: boolean;
+  error?: string;
+}
+
+export function recordOrder(db: Db, o: OrderRecord): void {
+  db.prepare(
+    `INSERT INTO orders (position_id, ts, mode, side, mint, sol_amount, token_amount, price_usd, tx_sig, ok, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    o.positionId,
+    o.ts,
+    o.mode,
+    o.side,
+    o.mint,
+    o.solAmount,
+    o.tokenAmount,
+    o.priceUsd,
+    o.txSig,
+    o.ok ? 1 : 0,
+    o.error ?? null,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  token_log (cooldown + última avaliação de risco)
+// ─────────────────────────────────────────────────────────────
+
+export function upsertTokenLog(
+  db: Db,
+  mint: string,
+  symbol: string,
+  riskScore: number | null,
+  verdict: string | null,
+  flagsJson: string | null,
+  cooldownUntil: number,
+  nowTs: number,
+): void {
+  db.prepare(
+    `INSERT INTO token_log (mint, symbol, first_seen_ts, last_eval_ts, risk_score, verdict, flags_json, cooldown_until)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(mint) DO UPDATE SET symbol = excluded.symbol,
+                                     last_eval_ts = excluded.last_eval_ts,
+                                     risk_score = excluded.risk_score,
+                                     verdict = excluded.verdict,
+                                     flags_json = excluded.flags_json,
+                                     cooldown_until = excluded.cooldown_until`,
+  ).run(mint, symbol, nowTs, nowTs, riskScore, verdict, flagsJson, cooldownUntil);
+}
+
+export function isOnCooldown(db: Db, mint: string, nowTs: number): boolean {
+  const row = db.prepare('SELECT cooldown_until FROM token_log WHERE mint = ?').get(mint) as
+    | { cooldown_until: number }
+    | undefined;
+  return row !== undefined && row.cooldown_until > nowTs;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Estatística diária (sustenta o circuit breaker de perda)
+// ─────────────────────────────────────────────────────────────
+
+/** Dia UTC de um timestamp em segundos: "2026-08-19". */
+export function dayKey(ts: number): string {
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+export function bumpDailyStats(db: Db, ts: number, pnlSol: number, pnlUsd: number): void {
+  const day = dayKey(ts);
+  db.prepare(
+    `INSERT INTO daily_stats (day, realized_pnl_sol, realized_pnl_usd, trades, wins, losses)
+     VALUES (?, ?, ?, 1, ?, ?)
+     ON CONFLICT(day) DO UPDATE SET realized_pnl_sol = realized_pnl_sol + excluded.realized_pnl_sol,
+                                    realized_pnl_usd = realized_pnl_usd + excluded.realized_pnl_usd,
+                                    trades = trades + 1,
+                                    wins = wins + excluded.wins,
+                                    losses = losses + excluded.losses`,
+  ).run(day, pnlSol, pnlUsd, pnlSol >= 0 ? 1 : 0, pnlSol < 0 ? 1 : 0);
+}
+
+export interface DailyStats {
+  day: string;
+  realizedPnlSol: number;
+  realizedPnlUsd: number;
+  trades: number;
+  wins: number;
+  losses: number;
+}
+
+export function getDailyStats(db: Db, ts: number): DailyStats {
+  const day = dayKey(ts);
+  const row = db.prepare('SELECT * FROM daily_stats WHERE day = ?').get(day) as
+    | {
+        day: string;
+        realized_pnl_sol: number;
+        realized_pnl_usd: number;
+        trades: number;
+        wins: number;
+        losses: number;
+      }
+    | undefined;
+  return row
+    ? {
+        day: row.day,
+        realizedPnlSol: row.realized_pnl_sol,
+        realizedPnlUsd: row.realized_pnl_usd,
+        trades: row.trades,
+        wins: row.wins,
+        losses: row.losses,
+      }
+    : { day, realizedPnlSol: 0, realizedPnlUsd: 0, trades: 0, wins: 0, losses: 0 };
+}
