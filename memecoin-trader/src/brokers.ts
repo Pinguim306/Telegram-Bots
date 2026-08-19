@@ -12,6 +12,19 @@ import type { Broker, BuyFill, PairSnapshot, SellFill } from './types.js';
  * é isso que garante que o modo paper testa o MESMO fluxo do live.
  */
 
+/**
+ * A carteira não tem NADA deste token para vender. Erro tipado porque o engine
+ * reage a ele: numa venda de 100% isso significa posição-zumbi (crash após a
+ * venda confirmar, ou tokens movidos por fora) — fecha e contabiliza, em vez
+ * de re-tentar a mesma venda impossível para sempre.
+ */
+export class NoBalanceError extends Error {
+  constructor(mint: string) {
+    super(`Sem saldo on-chain de ${mint} para vender`);
+    this.name = 'NoBalanceError';
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 //  Paper: simula fills com o preço real de mercado
 // ─────────────────────────────────────────────────────────────
@@ -68,9 +81,11 @@ export class PaperBroker implements Broker {
     portionPct: number,
     snap: PairSnapshot,
     solPriceUsd: number,
+    _urgent = false,
   ): Promise<SellFill> {
     if (solPriceUsd <= 0) throw new Error('Preço do SOL indisponível para o fill simulado');
-    const tokensSold = tokensQty * (Math.min(100, Math.max(0, portionPct)) / 100);
+    const pct = Math.min(100, Math.max(0, portionPct));
+    const tokensSold = tokensQty * (pct / 100);
     // Slippage simulada: venda sai mais barata que o preço de tela.
     const effPrice = snap.priceUsd * (1 - this.exec.paperSlippagePct / 100);
     const usdReceived = tokensSold * effPrice;
@@ -78,7 +93,7 @@ export class PaperBroker implements Broker {
 
     const balance = await this.balanceSol();
     kvSet(this.db, PAPER_BALANCE_KEY, String(balance + solReceived));
-    return { tokensSold, solReceived, usdReceived, priceUsd: effPrice, txSig: null };
+    return { tokensSold, solReceived, usdReceived, priceUsd: effPrice, txSig: null, soldAll: pct >= 100 };
   }
 }
 
@@ -160,11 +175,12 @@ export class LiveBroker implements Broker {
     portionPct: number,
     snap: PairSnapshot,
     solPriceUsd: number,
+    urgent = false,
   ): Promise<SellFill> {
     // A verdade é o saldo on-chain, não a contabilidade local: airdrop, dust de
     // arredondamento ou uma venda manual fora do bot deixariam o número local errado.
     const { raw, decimals } = await this.chain.tokenBalanceRaw(mint);
-    if (raw <= 0n) throw new Error(`Sem saldo on-chain de ${mint} para vender`);
+    if (raw <= 0n) throw new NoBalanceError(mint);
 
     const pct = Math.min(100, Math.max(0, portionPct));
     const bookkeepingRaw = BigInt(Math.floor(tokensQty * 10 ** decimals));
@@ -172,7 +188,11 @@ export class LiveBroker implements Broker {
     const sellRaw = pct >= 100 ? baseRaw : (baseRaw * BigInt(Math.round(pct * 100))) / 10_000n;
     if (sellRaw <= 0n) throw new Error('Quantidade de venda arredondou para zero');
 
-    const quote = await this.jupiter.quote(mint, WSOL_MINT, sellRaw, this.exec.slippageBps);
+    // Saída urgente (rug/stop): slippage larga. Num pool sendo drenado, a
+    // slippage normal faz a venda reverter tick após tick enquanto o preço
+    // derrete — preço ruim aceito é melhor que preço nenhum.
+    const slippageBps = urgent ? this.exec.emergencySlippageBps : this.exec.slippageBps;
+    const quote = await this.jupiter.quote(mint, WSOL_MINT, sellRaw, slippageBps);
     const wallet = this.chain.walletAddress();
     if (!wallet) throw new Error('Modo live sem carteira carregada');
     const { txBase64, lastValidBlockHeight } = await this.jupiter.swapTransaction(
@@ -192,6 +212,16 @@ export class LiveBroker implements Broker {
     const priceUsd = tokensSold > 0 && usdReceived > 0 ? usdReceived / tokensSold : snap.priceUsd;
 
     this.log.info({ mint, txSig, tokensSold, solReceived }, 'Venda live confirmada');
-    return { tokensSold, solReceived, usdReceived, priceUsd, txSig };
+    // soldAll: 100% pedido OU o saldo real foi esvaziado. A contabilidade local
+    // pode achar que "sobrou" (fill < quote, taxa de transferência) — se a
+    // carteira zerou, não existe mais nada vendível e a posição TEM que fechar.
+    return {
+      tokensSold,
+      solReceived,
+      usdReceived,
+      priceUsd,
+      txSig,
+      soldAll: pct >= 100 || sellRaw === raw,
+    };
   }
 }

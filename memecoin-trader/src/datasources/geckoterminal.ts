@@ -1,3 +1,4 @@
+import { cleanLabel } from '../format.js';
 import { fetchJson } from '../http.js';
 import type { Candidate } from '../types.js';
 
@@ -33,8 +34,9 @@ export function parsePoolsResponse(json: unknown, source: string): Candidate[] {
     seen.add(mint);
 
     // attributes.name vem como "BONK / SOL" — o lado esquerdo é o símbolo do base.
+    // cleanLabel: símbolo de token é conteúdo hostil (ver format.ts).
     const name: unknown = pool?.attributes?.name;
-    const symbol = typeof name === 'string' ? (name.split(' / ')[0] ?? '?') : '?';
+    const symbol = typeof name === 'string' ? cleanLabel(name.split(' / ')[0] ?? '?', 12) : '?';
 
     out.push({ mint, symbol, sources: [source] });
   }

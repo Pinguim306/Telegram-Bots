@@ -85,6 +85,7 @@
 
   "execution": {
     "slippageBps": 300,
+    "emergencySlippageBps": 1500,
     "maxPriorityFeeLamports": 2000000,
     "confirmTimeoutSec": 90,
     "paperSlippagePct": 1.5

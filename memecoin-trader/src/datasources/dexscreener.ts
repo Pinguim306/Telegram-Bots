@@ -1,3 +1,4 @@
+import { cleanLabel } from '../format.js';
 import { fetchJson } from '../http.js';
 import type { Candidate, PairSnapshot } from '../types.js';
 
@@ -43,14 +44,18 @@ export function normalizePair(raw: unknown, nowMs: number): PairSnapshot | null 
 
   return {
     mint: base.address,
-    symbol: typeof base.symbol === 'string' ? base.symbol : '?',
-    name: typeof base.name === 'string' ? base.name : '?',
+    // cleanLabel: nome de token é conteúdo hostil (escapes ANSI reescrevem o
+    // terminal por cima do veredito de risco) — sanitiza na ingestão.
+    symbol: typeof base.symbol === 'string' ? cleanLabel(base.symbol, 12) : '?',
+    name: typeof base.name === 'string' ? cleanLabel(base.name) : '?',
     pairAddress: typeof p.pairAddress === 'string' ? p.pairAddress : '',
-    dexId: typeof p.dexId === 'string' ? p.dexId : '?',
-    quoteSymbol: typeof p.quoteToken?.symbol === 'string' ? p.quoteToken.symbol : '?',
+    dexId: typeof p.dexId === 'string' ? cleanLabel(p.dexId, 16) : '?',
+    quoteSymbol: typeof p.quoteToken?.symbol === 'string' ? cleanLabel(p.quoteToken.symbol, 12) : '?',
     priceUsd,
     priceNative: numOrNull(p.priceNative),
-    liquidityUsd: num(p.liquidity?.usd),
+    // numOrNull, não num: liquidez ausente é DESCONHECIDA, não zero — zero
+    // dispararia a venda urgente por "dreno de liquidez" numa resposta parcial.
+    liquidityUsd: numOrNull(p.liquidity?.usd),
     fdvUsd: numOrNull(p.fdv),
     marketCapUsd: numOrNull(p.marketCap),
     vol5mUsd: num(p.volume?.m5),
@@ -77,7 +82,10 @@ export function bestPairPerMint(pairs: PairSnapshot[]): Map<string, PairSnapshot
   const best = new Map<string, PairSnapshot>();
   for (const pair of pairs) {
     const current = best.get(pair.mint);
-    if (!current || pair.liquidityUsd > current.liquidityUsd) best.set(pair.mint, pair);
+    // Liquidez desconhecida (-1) perde de qualquer valor conhecido, inclusive 0.
+    if (!current || (pair.liquidityUsd ?? -1) > (current.liquidityUsd ?? -1)) {
+      best.set(pair.mint, pair);
+    }
   }
   return best;
 }

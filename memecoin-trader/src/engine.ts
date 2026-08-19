@@ -1,9 +1,12 @@
+import { NoBalanceError } from './brokers.js';
+import { UnknownTxOutcomeError } from './chains/solana/index.js';
 import type { TraderConfig } from './config.js';
 import {
   applySellFill,
   bumpDailyStats,
   getDailyStats,
   getOpenPositionByMint,
+  getPosition,
   insertPosition,
   isOnCooldown,
   kvGet,
@@ -11,6 +14,7 @@ import {
   listOpenPositions,
   markTookProfit,
   recordOrder,
+  setTokenCooldown,
   updateTickState,
   upsertTokenLog,
   type Db,
@@ -22,12 +26,14 @@ import { blockReason, positionSizeSol } from './sizing.js';
 import { evaluateEntry, evaluateExit, type EntryResult, type ExitContext } from './strategy.js';
 import type {
   Broker,
+  BuyFill,
   Candidate,
   ChainAdapter,
   HolderStats,
   OnchainTokenInfo,
   PairSnapshot,
   RugcheckSummary,
+  SellFill,
 } from './types.js';
 
 /**
@@ -159,10 +165,26 @@ export class TraderEngine {
       const decision = evaluateExit(ctx, snap, this.cfg.exit, nowTs);
       if (decision.action === 'hold') continue;
 
-      // Venda sem snapshot (token sumiu do indexador): usa o último preço visto.
-      // No live o valor de verdade sai da quote do Jupiter de qualquer jeito.
-      const sellSnap = snap ?? this.syntheticSnap(pos);
-      await this.sellPosition(pos, decision.portionPct, sellSnap, solUsd, decision.reason, nowTs);
+      // Venda sem snapshot (token sumiu do indexador). No live o valor de
+      // verdade sai da quote do Jupiter. No PAPER, o fill simulado vale ZERO:
+      // token que some do indexador costuma ser pool drenado, e creditar o
+      // último preço visto transformaria um rug de -100% em -1,5% — inflando a
+      // estatística paper exatamente nos piores trades e cegando o circuit
+      // breaker diário, que é a base da decisão de ir para live.
+      const sellSnap =
+        snap ??
+        (this.broker.mode === 'paper'
+          ? { ...this.syntheticSnap(pos), priceUsd: 0 }
+          : this.syntheticSnap(pos));
+      await this.sellPosition(
+        pos,
+        decision.portionPct,
+        sellSnap,
+        solUsd,
+        decision.reason,
+        nowTs,
+        decision.urgent,
+      );
     }
   }
 
@@ -176,7 +198,7 @@ export class TraderEngine {
       quoteSymbol: '?',
       priceUsd: pos.lastPriceUsd > 0 ? pos.lastPriceUsd : pos.entryPriceUsd,
       priceNative: null,
-      liquidityUsd: 0,
+      liquidityUsd: null,
       fdvUsd: null,
       marketCapUsd: null,
       vol5mUsd: 0,
@@ -202,62 +224,164 @@ export class TraderEngine {
     solUsd: number,
     reason: string,
     nowTs: number,
+    urgent = false,
   ): Promise<void> {
+    // Relê a posição: outro processo (um `sell` manual com o `run` ligado) pode
+    // ter vendido/fechado entre a leitura do tick e agora. Vender de novo com o
+    // objeto obsoleto creditaria o caixa paper em dobro e dobraria a estatística.
+    const fresh = getPosition(this.db, pos.id);
+    if (!fresh || fresh.status !== 'open') {
+      this.log.debug({ mint: pos.mint }, 'Posição já não está aberta — venda ignorada');
+      return;
+    }
+
     try {
-      const fill = await this.broker.sell(pos.mint, pos.tokensQty, portionPct, snap, solUsd);
+      const fill = await this.broker.sell(
+        fresh.mint,
+        fresh.tokensQty,
+        portionPct,
+        snap,
+        solUsd,
+        urgent,
+      );
       recordOrder(this.db, {
-        positionId: pos.id,
+        positionId: fresh.id,
         ts: nowTs,
         mode: this.broker.mode,
         side: 'sell',
-        mint: pos.mint,
+        mint: fresh.mint,
         solAmount: fill.solReceived,
         tokenAmount: fill.tokensSold,
         priceUsd: fill.priceUsd,
         txSig: fill.txSig,
         ok: true,
       });
-      const { position, closed } = applySellFill(this.db, pos, fill, reason, nowTs);
-      if (closed) {
-        bumpDailyStats(this.db, nowTs, position.pnlSol ?? 0, position.pnlUsd ?? 0);
-        this.log.info(
-          {
-            mint: pos.mint,
-            symbol: pos.symbol,
-            reason,
-            pnlSol: position.pnlSol?.toFixed(4),
-            pnlPct: position.pnlPct?.toFixed(1),
-          },
-          'Posição fechada',
-        );
-      } else {
-        // Só a venda parcial do TAKE PROFIT desarma o take profit futuro — uma
-        // venda manual parcial não pode roubar o TP da posição que continua.
-        if (reason.startsWith('take profit')) markTookProfit(this.db, pos.id);
-        this.log.info(
-          { mint: pos.mint, symbol: pos.symbol, reason, portionPct },
-          'Venda parcial executada',
-        );
-      }
+      this.settleSell(fresh, fill, reason, nowTs);
     } catch (err) {
-      recordOrder(this.db, {
-        positionId: pos.id,
-        ts: nowTs,
-        mode: this.broker.mode,
-        side: 'sell',
-        mint: pos.mint,
-        solAmount: 0,
-        tokenAmount: 0,
-        priceUsd: snap.priceUsd,
-        txSig: null,
-        ok: false,
-        error: (err as Error).message,
-      });
-      this.log.error(
-        { mint: pos.mint, symbol: pos.symbol, err: (err as Error).message },
-        'Venda FALHOU — vou tentar de novo no próximo tick',
+      await this.handleSellFailure(fresh, portionPct, snap, solUsd, reason, nowTs, err as Error);
+    }
+  }
+
+  /** Contabiliza um fill de venda: fecha/parcial, estatística diária, cooldown. */
+  private settleSell(fresh: Position, fill: SellFill, reason: string, nowTs: number): void {
+    const { position, closed, applied } = applySellFill(this.db, fresh, fill, reason, nowTs);
+    if (!applied) {
+      this.log.warn(
+        { mint: fresh.mint, reason },
+        'Fill não contabilizado: a posição foi fechada por outro processo no meio da venda',
+      );
+      return;
+    }
+    if (closed) {
+      bumpDailyStats(this.db, nowTs, position.pnlSol ?? 0, position.pnlUsd ?? 0);
+      // Re-arma o cooldown NA SAÍDA: o da entrada expira durante o hold, e sem
+      // isso uma saída por tempo máximo/trailing recompra o token no mesmo tick.
+      setTokenCooldown(
+        this.db,
+        fresh.mint,
+        fresh.symbol,
+        nowTs + this.cfg.loop.tokenCooldownMin * 60,
+        nowTs,
+      );
+      this.log.info(
+        {
+          mint: fresh.mint,
+          symbol: fresh.symbol,
+          reason,
+          pnlSol: position.pnlSol?.toFixed(4),
+          pnlPct: position.pnlPct?.toFixed(1),
+        },
+        'Posição fechada',
+      );
+    } else {
+      // Só a venda parcial do TAKE PROFIT desarma o take profit futuro — uma
+      // venda manual parcial não pode roubar o TP da posição que continua.
+      if (reason.startsWith('take profit')) markTookProfit(this.db, fresh.id);
+      this.log.info(
+        { mint: fresh.mint, symbol: fresh.symbol, reason },
+        'Venda parcial executada',
       );
     }
+  }
+
+  /**
+   * Falha de venda não é tudo igual — dois casos exigem RECONCILIAÇÃO em vez
+   * de retry cego:
+   *   - NoBalanceError numa venda total: a carteira já está vazia (crash após
+   *     a venda confirmar, ou tokens movidos por fora). Re-tentar para sempre
+   *     mantém uma posição-zumbi ocupando slot e escondendo a perda do circuit
+   *     breaker. Fecha com fill zero e contabiliza.
+   *   - UnknownTxOutcomeError: a tx PODE ter executado. O saldo real decide:
+   *     carteira vazia = a venda aterrissou (contabiliza pelo preço de tela);
+   *     carteira com token = não aterrissou, o próximo tick tenta de novo.
+   */
+  private async handleSellFailure(
+    fresh: Position,
+    portionPct: number,
+    snap: PairSnapshot,
+    solUsd: number,
+    reason: string,
+    nowTs: number,
+    err: Error,
+  ): Promise<void> {
+    recordOrder(this.db, {
+      positionId: fresh.id,
+      ts: nowTs,
+      mode: this.broker.mode,
+      side: 'sell',
+      mint: fresh.mint,
+      solAmount: 0,
+      tokenAmount: 0,
+      priceUsd: snap.priceUsd,
+      txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
+      ok: false,
+      error: err.message,
+    });
+
+    if (err instanceof NoBalanceError && portionPct >= 100) {
+      this.log.warn(
+        { mint: fresh.mint, symbol: fresh.symbol },
+        'Carteira sem saldo do token numa venda total — fechando a posição como perda (reconciliação)',
+      );
+      this.settleSell(
+        fresh,
+        { tokensSold: fresh.tokensQty, solReceived: 0, usdReceived: 0, priceUsd: 0, txSig: null, soldAll: true },
+        `${reason} (reconciliado: carteira sem saldo)`,
+        nowTs,
+      );
+      return;
+    }
+
+    if (err instanceof UnknownTxOutcomeError) {
+      const balance = await this.chain.tokenBalanceUi(fresh.mint).catch(() => null);
+      if (balance !== null && balance <= fresh.tokensBought * 1e-6) {
+        this.log.warn(
+          { mint: fresh.mint, txSig: err.signature },
+          'Venda com destino desconhecido, mas a carteira zerou — contabilizando pelo preço de tela',
+        );
+        const tokensSold = fresh.tokensQty;
+        const usdReceived = tokensSold * snap.priceUsd;
+        this.settleSell(
+          fresh,
+          {
+            tokensSold,
+            solReceived: solUsd > 0 ? usdReceived / solUsd : 0,
+            usdReceived,
+            priceUsd: snap.priceUsd,
+            txSig: err.signature,
+            soldAll: true,
+          },
+          `${reason} (reconciliado pós-timeout)`,
+          nowTs,
+        );
+        return;
+      }
+    }
+
+    this.log.error(
+      { mint: fresh.mint, symbol: fresh.symbol, err: err.message },
+      'Venda FALHOU — vou tentar de novo no próximo tick',
+    );
   }
 
   // ───────────────────────────────────────────────────────────
@@ -412,41 +536,7 @@ export class TraderEngine {
 
     try {
       const fill = await this.broker.buy(cand.mint, size, snap, solUsd);
-      const position = insertPosition(this.db, {
-        mode: this.broker.mode,
-        chain: this.chain.key,
-        mint: cand.mint,
-        symbol: snap.symbol,
-        entryTs: nowTs,
-        entryLiquidityUsd: snap.liquidityUsd,
-        entryScore: entry.score,
-        entryRiskScore: report.score,
-        entryReasons: entry.reasons.join(', '),
-        fill,
-      });
-      recordOrder(this.db, {
-        positionId: position.id,
-        ts: nowTs,
-        mode: this.broker.mode,
-        side: 'buy',
-        mint: cand.mint,
-        solAmount: fill.solSpent,
-        tokenAmount: fill.tokensQty,
-        priceUsd: fill.priceUsd,
-        txSig: fill.txSig,
-        ok: true,
-      });
-      this.log.info(
-        {
-          mint: cand.mint,
-          symbol: snap.symbol,
-          solSpent: fill.solSpent.toFixed(4),
-          entryScore: entry.score,
-          riskScore: report.score,
-          reasons: entry.reasons,
-        },
-        'ENTRADA executada',
-      );
+      this.settleBuy(cand.mint, snap, entry.score, report.score, entry.reasons.join(', '), fill, nowTs);
     } catch (err) {
       recordOrder(this.db, {
         positionId: null,
@@ -457,12 +547,86 @@ export class TraderEngine {
         solAmount: size,
         tokenAmount: 0,
         priceUsd: snap.priceUsd,
-        txSig: null,
+        txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
         ok: false,
         error: (err as Error).message,
       });
+      // Compra com destino desconhecido: a tx PODE ter executado. Se os tokens
+      // chegaram na carteira, adotá-los como posição é obrigatório — sem isso
+      // eles ficam órfãos, fora do stop loss e de toda gestão de saída.
+      if (err instanceof UnknownTxOutcomeError) {
+        const balance = await this.chain.tokenBalanceUi(cand.mint).catch(() => 0);
+        if (balance > 0) {
+          this.log.warn(
+            { mint: cand.mint, txSig: err.signature, tokensQty: balance },
+            'Compra com destino desconhecido ATERRISSOU — adotando os tokens como posição',
+          );
+          this.settleBuy(
+            cand.mint,
+            snap,
+            entry.score,
+            report.score,
+            `${entry.reasons.join(', ')} (adotada pós-timeout)`,
+            {
+              tokensQty: balance,
+              solSpent: size,
+              usdSpent: size * solUsd,
+              priceUsd: balance > 0 ? (size * solUsd) / balance : snap.priceUsd,
+              txSig: err.signature,
+            },
+            nowTs,
+          );
+          return;
+        }
+      }
       this.log.error({ mint: cand.mint, err: (err as Error).message }, 'Compra falhou');
     }
+  }
+
+  /** Grava posição + ordem de uma compra que (comprovadamente) aconteceu. */
+  private settleBuy(
+    mint: string,
+    snap: PairSnapshot,
+    entryScore: number,
+    riskScore: number,
+    entryReasons: string,
+    fill: BuyFill,
+    nowTs: number,
+  ): void {
+    const position = insertPosition(this.db, {
+      mode: this.broker.mode,
+      chain: this.chain.key,
+      mint,
+      symbol: snap.symbol,
+      entryTs: nowTs,
+      entryLiquidityUsd: snap.liquidityUsd ?? 0,
+      entryScore,
+      entryRiskScore: riskScore,
+      entryReasons,
+      fill,
+    });
+    recordOrder(this.db, {
+      positionId: position.id,
+      ts: nowTs,
+      mode: this.broker.mode,
+      side: 'buy',
+      mint,
+      solAmount: fill.solSpent,
+      tokenAmount: fill.tokensQty,
+      priceUsd: fill.priceUsd,
+      txSig: fill.txSig,
+      ok: true,
+    });
+    this.log.info(
+      {
+        mint,
+        symbol: snap.symbol,
+        solSpent: fill.solSpent.toFixed(4),
+        entryScore,
+        riskScore,
+      },
+      'ENTRADA executada',
+    );
   }
 
   // ───────────────────────────────────────────────────────────
@@ -489,31 +653,15 @@ export class TraderEngine {
     }
 
     const fill = await this.broker.buy(mint, solAmount, snap, solUsd);
-    const position = insertPosition(this.db, {
-      mode: this.broker.mode,
-      chain: this.chain.key,
+    this.settleBuy(
       mint,
-      symbol: snap.symbol,
-      entryTs: nowTs,
-      entryLiquidityUsd: snap.liquidityUsd,
-      entryScore: 0,
-      entryRiskScore: analysis.report.score,
-      entryReasons: force ? 'manual (--force)' : 'manual',
+      snap,
+      0,
+      analysis.report.score,
+      force ? 'manual (--force)' : 'manual',
       fill,
-    });
-    recordOrder(this.db, {
-      positionId: position.id,
-      ts: nowTs,
-      mode: this.broker.mode,
-      side: 'buy',
-      mint,
-      solAmount: fill.solSpent,
-      tokenAmount: fill.tokensQty,
-      priceUsd: fill.priceUsd,
-      txSig: fill.txSig,
-      ok: true,
-    });
-    this.log.info({ mint, symbol: snap.symbol, solSpent: fill.solSpent }, 'Compra manual executada');
+      nowTs,
+    );
   }
 
   async manualSell(mint: string, portionPct: number): Promise<void> {

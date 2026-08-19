@@ -15,6 +15,7 @@ import {
   listClosedPositions,
   listOpenPositions,
   openTraderDb,
+  setTokenCooldown,
   updateTickState,
   upsertTokenLog,
   type Db,
@@ -63,7 +64,7 @@ describe('posições', () => {
     const half = applySellFill(
       db,
       pos,
-      { tokensSold: 5_000, solReceived: 0.15, usdReceived: 30, priceUsd: 0.006, txSig: null },
+      { tokensSold: 5_000, solReceived: 0.15, usdReceived: 30, priceUsd: 0.006, txSig: null, soldAll: false },
       'take profit',
       NOW + 600,
     );
@@ -75,7 +76,7 @@ describe('posições', () => {
     const rest = applySellFill(
       db,
       half.position,
-      { tokensSold: 5_000, solReceived: 0.12, usdReceived: 24, priceUsd: 0.0048, txSig: null },
+      { tokensSold: 5_000, solReceived: 0.12, usdReceived: 24, priceUsd: 0.0048, txSig: null, soldAll: true },
       'trailing stop',
       NOW + 1200,
     );
@@ -96,11 +97,56 @@ describe('posições', () => {
       db,
       pos,
       // Vendeu "tudo" menos um resíduo de float minúsculo.
-      { tokensSold: 10_000 - 1e-9, solReceived: 0.2, usdReceived: 40, priceUsd: 0.004, txSig: null },
+      { tokensSold: 10_000 - 1e-9, solReceived: 0.2, usdReceived: 40, priceUsd: 0.004, txSig: null, soldAll: false },
       'stop loss',
       NOW + 60,
     );
     expect(result.closed).toBe(true);
+  });
+
+  it('soldAll fecha mesmo com sobra contábil grande (fill live < quote)', () => {
+    // Live: a contabilidade achava 10.000 tokens (quote), a carteira tinha 9.700
+    // (slippage/taxa). A venda de 100% esvaziou a carteira: soldAll=true TEM que
+    // fechar — sem isso a posição vira zumbi, re-tenta venda para sempre e o
+    // prejuízo nunca chega ao circuit breaker diário.
+    const pos = openPosition();
+    const result = applySellFill(
+      db,
+      pos,
+      { tokensSold: 9_700, solReceived: 0.15, usdReceived: 30, priceUsd: 0.0031, txSig: 'sig', soldAll: true },
+      'stop loss',
+      NOW + 60,
+    );
+    expect(result.closed).toBe(true);
+    expect(result.position.status).toBe('closed');
+    expect(result.position.pnlSol).toBeCloseTo(-0.05);
+  });
+
+  it('fechamento duplo é bloqueado: o segundo fill não sobrescreve nem conta de novo', () => {
+    const pos = openPosition();
+    const first = applySellFill(
+      db,
+      pos,
+      { tokensSold: 10_000, solReceived: 0.3, usdReceived: 60, priceUsd: 0.006, txSig: null, soldAll: true },
+      'take profit',
+      NOW + 60,
+    );
+    expect(first.closed).toBe(true);
+    expect(first.applied).toBe(true);
+
+    // Outro processo tenta aplicar venda com o objeto OBSOLETO da mesma posição.
+    const second = applySellFill(
+      db,
+      pos,
+      { tokensSold: 10_000, solReceived: 0.28, usdReceived: 56, priceUsd: 0.0056, txSig: null, soldAll: true },
+      'manual',
+      NOW + 61,
+    );
+    expect(second.applied).toBe(false);
+    expect(second.closed).toBe(false);
+    // O registro no banco continua o do PRIMEIRO fechamento.
+    expect(second.position.pnlSol).toBeCloseTo(first.position.pnlSol!);
+    expect(second.position.exitReason).toBe('take profit');
   });
 
   it('atualiza estado de tick (pico, último preço, stale)', () => {
@@ -125,6 +171,19 @@ describe('kv e cooldown', () => {
     upsertTokenLog(db, 'MintZ', 'TKZ', 55, 'rejected', '[]', NOW + 3600, NOW);
     expect(isOnCooldown(db, 'MintZ', NOW)).toBe(true);
     expect(isOnCooldown(db, 'MintZ', NOW + 3601)).toBe(false);
+  });
+
+  it('setTokenCooldown re-arma sem sobrescrever para trás (MAX)', () => {
+    upsertTokenLog(db, 'MintZ', 'TKZ', 10, 'approved', '[]', NOW + 7200, NOW);
+    // Re-arme com prazo MENOR não pode encurtar o cooldown vigente.
+    setTokenCooldown(db, 'MintZ', 'TKZ', NOW + 3600, NOW);
+    expect(isOnCooldown(db, 'MintZ', NOW + 7000)).toBe(true);
+    // Re-arme com prazo maior estende.
+    setTokenCooldown(db, 'MintZ', 'TKZ', NOW + 10_000, NOW);
+    expect(isOnCooldown(db, 'MintZ', NOW + 9_000)).toBe(true);
+    // E funciona para mint que nunca foi avaliado.
+    setTokenCooldown(db, 'MintNovo', 'NEW', NOW + 100, NOW);
+    expect(isOnCooldown(db, 'MintNovo', NOW + 50)).toBe(true);
   });
 });
 

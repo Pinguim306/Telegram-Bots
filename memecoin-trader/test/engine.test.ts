@@ -81,6 +81,25 @@ class FakeChain implements ChainAdapter {
   async getTopHolders(): Promise<HolderStats | null> {
     return { top1Pct: 4, top10Pct: 22, holderCount: null, source: 'onchain' };
   }
+  async tokenBalanceUi(): Promise<number> {
+    return 0;
+  }
+}
+
+/** PaperBroker que grava o flag `urgent` recebido em cada venda. */
+class UrgentSpyBroker extends PaperBroker {
+  urgentSeen: boolean[] = [];
+  override async sell(
+    mint: string,
+    tokensQty: number,
+    portionPct: number,
+    snap: PairSnapshot,
+    solPriceUsd: number,
+    urgent = false,
+  ) {
+    this.urgentSeen.push(urgent);
+    return super.sell(mint, tokensQty, portionPct, snap, solPriceUsd, urgent);
+  }
 }
 
 const cleanRugcheck: RugcheckSummary = {
@@ -181,13 +200,15 @@ describe('TraderEngine', () => {
     expect(await broker.balanceSol()).toBe(cfg.sizing.paperStartBalanceSol);
   });
 
-  it('token que some do indexador: espera N ticks e sai pelo último preço', async () => {
+  it('token que some do indexador: sai após N ticks e o paper contabiliza PERDA TOTAL', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
     const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
 
     await engine.tick(T0);
-    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    const open = listOpenPositions(db, 'paper');
+    expect(open).toHaveLength(1);
+    const solSpent = open[0]!.solSpent;
 
     // O indexador responde, mas o token não está mais lá.
     state.snap = null;
@@ -198,6 +219,57 @@ describe('TraderEngine', () => {
     const closed = listClosedPositions(db, 'paper');
     expect(closed).toHaveLength(1);
     expect(closed[0]!.exitReason).toContain('sem dados');
+    // Token sumido do indexador costuma ser pool drenado: o paper NÃO pode
+    // creditar o último preço visto — seria transformar rug de -100% em -1,5%
+    // e inflar a estatística que decide a ida para o live.
+    expect(closed[0]!.pnlSol!).toBeCloseTo(-solSpent, 5);
+    expect(getDailyStats(db, T0 + 600).realizedPnlSol).toBeCloseTo(-solSpent, 5);
+  });
+
+  it('take profit vende com urgent=false; dreno de liquidez vende com urgent=true', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new UrgentSpyBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+
+    // Preço no take profit (sem drawdown do topo) -> venda parcial NÃO urgente.
+    state.snap = snap({ priceUsd: entryPrice * (1 + cfg.exit.takeProfitPct / 100 + 0.02) });
+    await engine.tick(T0 + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    expect(broker.urgentSeen).toEqual([false]);
+
+    // Liquidez despenca abaixo de liquidityDrainPct da entrada -> saída urgente.
+    state.snap = snap({ priceUsd: entryPrice, liquidityUsd: 10_000 });
+    await engine.tick(T0 + 120);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    expect(broker.urgentSeen).toEqual([false, true]);
+  });
+
+  it('fechar por tempo máximo re-arma o cooldown — sem recompra no MESMO tick', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+
+    // Muito depois do cooldown de análise (90min) expirar: o tempo máximo vende.
+    // O token continua trending e passando nos gates — sem o re-arme do cooldown
+    // na SAÍDA, o scanForEntries do MESMO tick recompraria na sequência.
+    const exitTick = T0 + (cfg.exit.maxHoldMin + 1) * 60;
+    await engine.tick(exitTick);
+
+    const closed = listClosedPositions(db, 'paper');
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.exitReason).toContain('tempo máximo');
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+
+    // E também não recompra no tick seguinte.
+    await engine.tick(exitTick + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
   });
 
   it('venda manual parcial não desarma o take profit da posição', async () => {

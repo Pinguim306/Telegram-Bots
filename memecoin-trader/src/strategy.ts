@@ -44,7 +44,8 @@ export function evaluateEntry(
   const volumeMultiple =
     baselinePerHour > 0 ? snap.vol1hUsd / baselinePerHour : snap.vol1hUsd > 0 ? 999 : 0;
 
-  const turnover = snap.liquidityUsd > 0 ? snap.vol24hUsd / snap.liquidityUsd : 0;
+  const turnover =
+    snap.liquidityUsd !== null && snap.liquidityUsd > 0 ? snap.vol24hUsd / snap.liquidityUsd : 0;
 
   for (const rule of cfg.rules) {
     const p = rule.params;
@@ -81,6 +82,9 @@ export function evaluateEntry(
 function checkGates(snap: PairSnapshot, cfg: EntryConfig): string | null {
   const g = cfg.gates;
   if (snap.priceUsd <= 0) return 'sem preço';
+  // Na ENTRADA, liquidez desconhecida reprova (conservador): não se compra o
+  // que não se sabe se dá para vender. Na SAÍDA a regra é a oposta — ver evaluateExit.
+  if (snap.liquidityUsd === null) return 'liquidez desconhecida';
   if (snap.liquidityUsd < g.minLiquidityUsd) {
     return `liquidez $${snap.liquidityUsd.toFixed(0)} < $${g.minLiquidityUsd}`;
   }
@@ -153,7 +157,11 @@ export function evaluateExit(
   const peakPnlPct = ctx.entryPriceUsd > 0 ? (peak / ctx.entryPriceUsd - 1) * 100 : 0;
 
   // 1. Liquidez drenando = rug em andamento. Sai antes de qualquer conta de lucro.
+  // liquidityUsd null = o indexador não informou NESTA resposta — desconhecido
+  // não dispara venda de emergência (stop loss e stale-exit seguem protegendo);
+  // já um ZERO lido de verdade é pool vazio e dispara.
   if (
+    snap.liquidityUsd !== null &&
     ctx.entryLiquidityUsd > 0 &&
     snap.liquidityUsd < ctx.entryLiquidityUsd * (cfg.liquidityDrainPct / 100)
   ) {

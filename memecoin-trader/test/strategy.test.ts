@@ -50,6 +50,12 @@ describe('evaluateEntry — gates', () => {
     expect(result.rejection).toContain('liquidez');
   });
 
+  it('reprova liquidez DESCONHECIDA na entrada — não se compra o que não se sabe vender', () => {
+    const result = evaluateEntry(pumpingSnap({ liquidityUsd: null }), [], cfg.entry);
+    expect(result.eligible).toBe(false);
+    expect(result.rejection).toContain('desconhecida');
+  });
+
   it('reprova volume 1h abaixo do mínimo', () => {
     const result = evaluateEntry(pumpingSnap({ vol1hUsd: 1_000 }), [], cfg.entry);
     expect(result.eligible).toBe(false);
@@ -182,6 +188,17 @@ describe('evaluateExit', () => {
 
     const sell = evaluateExit(ctx({ staleTicks: cfg.exit.staleTicksToExit - 1 }), null, cfg.exit, nowTs);
     expect(sell).toMatchObject({ action: 'sell', portionPct: 100, urgent: true });
+  });
+
+  it('liquidez DESCONHECIDA na resposta não dispara venda por dreno (mas zero real dispara)', () => {
+    // Resposta parcial da API (liquidity ausente) não pode vender uma posição
+    // saudável em pânico — desconhecido não é zero.
+    const unknown = evaluateExit(ctx(), pumpingSnap({ liquidityUsd: null }), cfg.exit, nowTs);
+    expect(unknown.action).toBe('hold');
+
+    // Já um ZERO lido de verdade é pool vazio: dispara.
+    const drained = evaluateExit(ctx(), pumpingSnap({ liquidityUsd: 0 }), cfg.exit, nowTs);
+    expect(drained).toMatchObject({ action: 'sell', portionPct: 100, urgent: true });
   });
 
   it('dreno de liquidez tem prioridade sobre take profit', () => {

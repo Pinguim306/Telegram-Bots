@@ -50,6 +50,18 @@ export function sol(value: number): string {
   return value.toFixed(4);
 }
 
+/**
+ * Nome/símbolo de token é conteúdo HOSTIL: qualquer um minta um token cujo nome
+ * carrega escapes ANSI (reescrevem a tela do terminal por cima do veredito de
+ * risco), marcas bidirecionais ou 300 chars de lixo. Remove todos os code
+ * points de controle/formato e limita o tamanho — aplicado na fronteira de
+ * ingestão (datasources), antes de logar, gravar ou imprimir.
+ */
+export function cleanLabel(text: string, maxLen = 32): string {
+  const cleaned = [...text.replace(/\p{C}/gu, '')].slice(0, maxLen).join('').trim();
+  return cleaned || '?';
+}
+
 /** Endereço encurtado: So1111..1112. */
 export function shortAddr(address: string, head = 6, tail = 4): string {
   if (address.length <= head + tail + 2) return address;

@@ -17,7 +17,7 @@ import {
 import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
 import { TraderEngine, type Sources } from './engine.js';
-import { ageMin, pct, price, shortAddr, sol, table, usd } from './format.js';
+import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
 import { loadKeypair } from './wallet.js';
 import type { Broker } from './types.js';
@@ -139,7 +139,9 @@ async function cmdStatus(): Promise<void> {
     const pnlPct = p.entryPriceUsd > 0 ? (current / p.entryPriceUsd - 1) * 100 : 0;
     const holdMin = (nowTs - p.entryTs) / 60;
     return [
-      p.symbol,
+      // cleanLabel de novo na saída: linhas antigas do banco podem ter sido
+      // gravadas antes da sanitização na ingestão existir.
+      cleanLabel(p.symbol, 12),
       shortAddr(p.mint),
       sol(p.solSpent),
       `$${price(p.entryPriceUsd)}`,
@@ -163,7 +165,9 @@ async function cmdCheck(mint: string | undefined): Promise<void> {
   if (snap) {
     console.log(`Token:      ${snap.symbol} (${snap.name}) na ${snap.dexId}`);
     console.log(`Preço:      $${price(snap.priceUsd)}  (5m ${pct(snap.change5mPct)} · 1h ${pct(snap.change1hPct)} · 24h ${pct(snap.change24hPct)})`);
-    console.log(`Liquidez:   ${usd(snap.liquidityUsd)}   Volume 24h: ${usd(snap.vol24hUsd)}`);
+    console.log(
+      `Liquidez:   ${snap.liquidityUsd !== null ? usd(snap.liquidityUsd) : '?'}   Volume 24h: ${usd(snap.vol24hUsd)}`,
+    );
     console.log(`Market cap: ${snap.marketCapUsd !== null ? usd(snap.marketCapUsd) : '?'}   Idade: ${ageMin(snap.ageMin)}`);
     console.log(`Txns 1h:    ${snap.buys1h} compras / ${snap.sells1h} vendas\n`);
   } else {
@@ -231,7 +235,7 @@ async function cmdHistory(args: string[]): Promise<void> {
   }
   const rows = closed.map((p) => [
     p.exitTs ? new Date(p.exitTs * 1000).toISOString().slice(5, 16).replace('T', ' ') : '?',
-    p.symbol,
+    cleanLabel(p.symbol, 12),
     sol(p.solSpent),
     sol(p.pnlSol ?? 0),
     pct(p.pnlPct ?? 0),

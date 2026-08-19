@@ -1,3 +1,4 @@
+import { cleanLabel } from '../format.js';
 import { fetchJson } from '../http.js';
 import type { RugcheckSummary } from '../types.js';
 
@@ -47,7 +48,8 @@ export function normalizeRugcheckReport(json: unknown): RugcheckSummary {
   const warnFlags: string[] = [];
   if (Array.isArray(r.risks)) {
     for (const risk of r.risks as Record<string, any>[]) {
-      const name = typeof risk?.name === 'string' ? risk.name : 'desconhecido';
+      // cleanLabel: o nome vem de API de terceiro e acaba impresso no terminal.
+      const name = typeof risk?.name === 'string' ? cleanLabel(risk.name, 64) : 'desconhecido';
       if (risk?.level === 'danger') {
         const bucket = LP_FLAG_RE.test(name) ? lpDangerFlags : dangerFlags;
         if (!bucket.includes(name)) bucket.push(name);

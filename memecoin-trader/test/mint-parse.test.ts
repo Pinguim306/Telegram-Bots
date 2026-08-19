@@ -113,6 +113,26 @@ describe('parseToken2022Extensions', () => {
     expect(result.taxing).toEqual(['transferFeeConfig']);
   });
 
+  it('pausable é o tipo 26 do enum oficial — e é vetado', () => {
+    // Regressão de um off-by-one real: 24=confidentialMintBurn, 25=scaledUiAmount,
+    // 26=pausable. Errar isso deixa um honeypot pausável passar pelo veto.
+    const result = parseToken2022Extensions(token2022Data([{ type: 26, length: 33 }]));
+    expect(result.all).toEqual(['pausable']);
+    expect(result.dangerous).toEqual(['pausable']);
+  });
+
+  it('scaledUiAmount (25) é taxa, não veto; confidentialMintBurn (24) não é taxa', () => {
+    const scaled = parseToken2022Extensions(token2022Data([{ type: 25, length: 24 }]));
+    expect(scaled.all).toEqual(['scaledUiAmount']);
+    expect(scaled.taxing).toEqual(['scaledUiAmount']);
+    expect(scaled.dangerous).toEqual([]);
+
+    const confidential = parseToken2022Extensions(token2022Data([{ type: 24, length: 32 }]));
+    expect(confidential.all).toEqual(['confidentialMintBurn']);
+    expect(confidential.taxing).toEqual([]);
+    expect(confidential.dangerous).toEqual([]);
+  });
+
   it('tipo desconhecido não explode e ganha nome genérico', () => {
     const result = parseToken2022Extensions(token2022Data([{ type: 99, length: 4 }]));
     expect(result.all).toEqual(['ext_99']);

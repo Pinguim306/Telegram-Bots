@@ -146,8 +146,16 @@ Detalhes de calibração que vieram de dados reais, não de teoria:
 4. **Take profit parcial** — realiza `takeProfitSellPct`% em `takeProfitPct` de lucro,
    uma vez, e deixa o resto correr no trailing;
 5. **Tempo máximo** (`maxHoldMin`) — memecoin sem tese não é posição de longo prazo;
-6. **Token sumiu do indexador** — espera `staleTicksToExit` ticks e sai pelo último preço
-   visto. Token que some costuma ser pool drenado; segurar é pior.
+6. **Token sumiu do indexador** — espera `staleTicksToExit` ticks e sai. No live a venda
+   sai via Jupiter pelo preço que realmente houver; no **paper a posição é contabilizada
+   como perda total** — token que some do indexador costuma ser pool drenado, e creditar
+   o último preço visto transformaria um rug de −100% em −1,5%, inflando a estatística
+   exatamente nos piores trades.
+
+As saídas de emergência (dreno, stop, sem dados) usam `emergencySlippageBps` (padrão
+15%) em vez da slippage normal: num pool sendo drenado, a slippage de 3% faz toda venda
+reverter tick após tick enquanto o preço derrete — preço ruim aceito é melhor que preço
+nenhum.
 
 ---
 
@@ -169,7 +177,13 @@ Regras de sobrevivência:
   429 sob qualquer carga; o bot faz retry, mas em live latência é dinheiro.
 - No live, quantidades são registradas a partir da **quote** do Jupiter (o fill real pode
   variar dentro da slippage). A assinatura da transação fica gravada em `orders` para
-  auditoria fina no Solscan.
+  auditoria fina no Solscan. Vendas de 100% fecham a posição pelo que a carteira
+  **realmente** tinha (`soldAll`) — divergência contábil não deixa posição-zumbi.
+- Timeout de confirmação **não** é tratado como falha: uma transação transmitida continua
+  válida até o blockhash vencer, então o bot resolve o destino de verdade (confirmada,
+  falhada ou expirada) antes de reportar qualquer coisa. Se nem isso der resposta, o
+  saldo real da carteira decide a reconciliação — compra que aterrissou vira posição
+  (com stop loss), venda que aterrissou é contabilizada, e nada é re-executado às cegas.
 - Compra é abortada se o impacto de preço da própria ordem passar de 10% — pool raso
   demais para o seu tamanho.
 
