@@ -42,7 +42,7 @@
       "minTxns1h": 150,
       "minBuyRatio1h": 0.55,
       "minMarketCapUsd": 15000,
-      "maxMarketCapUsd": 100000
+      "maxMarketCapUsd": 30000
     },
     "minScore": 55,
     "rules": [
@@ -96,6 +96,7 @@
   "execution": {
     "slippageBps": 300,
     "emergencySlippageBps": 1500,
+    "pumpportalFallback": true,
     "maxPriorityFeeLamports": 2000000,
     "confirmTimeoutSec": 90,
     "paperSlippagePct": 1.5

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import {
   applySellFill,
   bumpDailyStats,
@@ -44,6 +45,7 @@ function openPosition() {
     symbol: 'TKA',
     entryTs: NOW,
     entryLiquidityUsd: 50_000,
+    entryMcapUsd: 40_000,
     entryScore: 70,
     entryRiskScore: 10,
     entryReasons: 'Momentum 1h',
@@ -56,6 +58,7 @@ describe('posições', () => {
     const pos = openPosition();
     expect(pos.status).toBe('open');
     expect(pos.tokensQty).toBe(10_000);
+    expect(pos.entryMcapUsd).toBe(40_000);
     expect(listOpenPositions(db, 'paper')).toHaveLength(1);
     // Modo live não enxerga posição paper.
     expect(listOpenPositions(db, 'live')).toHaveLength(0);
@@ -79,8 +82,10 @@ describe('posições', () => {
       { tokensSold: 5_000, solReceived: 0.12, usdReceived: 24, priceUsd: 0.0048, txSig: null, soldAll: true },
       'trailing stop',
       NOW + 1200,
+      55_000,
     );
     expect(rest.closed).toBe(true);
+    expect(rest.position.exitMcapUsd).toBe(55_000);
     expect(rest.position.status).toBe('closed');
     // PnL total: recebeu 0.27, gastou 0.2.
     expect(rest.position.pnlSol).toBeCloseTo(0.07);
@@ -204,5 +209,53 @@ describe('estatística diária', () => {
 
   it('dayKey vira na meia-noite UTC', () => {
     expect(dayKey(NOW)).not.toBe(dayKey(NOW + 86_400));
+  });
+});
+
+describe('migração de banco antigo', () => {
+  it('adiciona as colunas novas num trader.sqlite criado antes delas', () => {
+    const oldDir = mkdtempSync(join(tmpdir(), 'trader-old-'));
+    // Banco no formato ANTIGO (sem entry_mcap_usd/exit_mcap_usd/mcap_usd/venue).
+    const raw = new Database(join(oldDir, 'trader.sqlite'));
+    raw.exec(`
+      CREATE TABLE positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, chain TEXT NOT NULL,
+        mint TEXT NOT NULL, symbol TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+        entry_ts INTEGER NOT NULL, entry_price_usd REAL NOT NULL, entry_liquidity_usd REAL NOT NULL,
+        entry_score REAL NOT NULL DEFAULT 0, entry_risk_score REAL NOT NULL DEFAULT 0,
+        entry_reasons TEXT NOT NULL DEFAULT '', sol_spent REAL NOT NULL, usd_spent REAL NOT NULL,
+        tokens_bought REAL NOT NULL, tokens_qty REAL NOT NULL, peak_price_usd REAL NOT NULL,
+        last_price_usd REAL NOT NULL DEFAULT 0, took_profit INTEGER NOT NULL DEFAULT 0,
+        stale_ticks INTEGER NOT NULL DEFAULT 0, sol_received REAL NOT NULL DEFAULT 0,
+        usd_received REAL NOT NULL DEFAULT 0, exit_ts INTEGER, exit_price_usd REAL,
+        exit_reason TEXT, pnl_sol REAL, pnl_usd REAL, pnl_pct REAL
+      );
+      CREATE TABLE orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, position_id INTEGER, ts INTEGER NOT NULL,
+        mode TEXT NOT NULL, side TEXT NOT NULL, mint TEXT NOT NULL,
+        sol_amount REAL NOT NULL DEFAULT 0, token_amount REAL NOT NULL DEFAULT 0,
+        price_usd REAL NOT NULL DEFAULT 0, tx_sig TEXT, ok INTEGER NOT NULL, error TEXT
+      );
+    `);
+    raw.close();
+
+    // Reabrir pelo caminho oficial roda a migração — e o INSERT novo funciona.
+    const migrated = openTraderDb(oldDir);
+    const pos = insertPosition(migrated, {
+      mode: 'paper',
+      chain: 'solana',
+      mint: 'MintMigrado',
+      symbol: 'MIG',
+      entryTs: NOW,
+      entryLiquidityUsd: 1000,
+      entryMcapUsd: 22_000,
+      entryScore: 60,
+      entryRiskScore: 5,
+      entryReasons: 'teste',
+      fill: { tokensQty: 100, solSpent: 0.1, usdSpent: 10, priceUsd: 0.1, txSig: null },
+    });
+    expect(pos.entryMcapUsd).toBe(22_000);
+    migrated.close();
+    rmSync(oldDir, { recursive: true, force: true });
   });
 });

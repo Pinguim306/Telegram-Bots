@@ -22,6 +22,18 @@ export function openTraderDb(dataDir: string): Db {
   return db;
 }
 
+/**
+ * Adiciona uma coluna se ela ainda não existir. O CREATE TABLE IF NOT EXISTS
+ * não altera tabelas de bancos já criados — sem isto, quem atualizasse o bot
+ * com um trader.sqlite antigo quebraria no primeiro INSERT.
+ */
+function ensureColumn(db: Db, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
 function migrate(db: Db): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS kv (
@@ -39,6 +51,8 @@ function migrate(db: Db): void {
       entry_ts            INTEGER NOT NULL,
       entry_price_usd     REAL NOT NULL,
       entry_liquidity_usd REAL NOT NULL,
+      entry_mcap_usd      REAL,
+      exit_mcap_usd       REAL,
       entry_score         REAL NOT NULL DEFAULT 0,
       entry_risk_score    REAL NOT NULL DEFAULT 0,
       entry_reasons       TEXT NOT NULL DEFAULT '',
@@ -72,6 +86,8 @@ function migrate(db: Db): void {
       sol_amount   REAL NOT NULL DEFAULT 0,
       token_amount REAL NOT NULL DEFAULT 0,
       price_usd    REAL NOT NULL DEFAULT 0,
+      mcap_usd     REAL,
+      venue        TEXT,
       tx_sig       TEXT,
       ok           INTEGER NOT NULL,
       error        TEXT
@@ -98,6 +114,11 @@ function migrate(db: Db): void {
       losses           INTEGER NOT NULL DEFAULT 0
     );
   `);
+
+  ensureColumn(db, 'positions', 'entry_mcap_usd', 'REAL');
+  ensureColumn(db, 'positions', 'exit_mcap_usd', 'REAL');
+  ensureColumn(db, 'orders', 'mcap_usd', 'REAL');
+  ensureColumn(db, 'orders', 'venue', 'TEXT');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -131,6 +152,10 @@ export interface Position {
   entryTs: number;
   entryPriceUsd: number;
   entryLiquidityUsd: number;
+  /** Market cap na COMPRA (o "tamanho" do token quando entramos), ou null. */
+  entryMcapUsd: number | null;
+  /** Market cap na venda que FECHOU a posição, ou null. */
+  exitMcapUsd: number | null;
   entryScore: number;
   entryRiskScore: number;
   entryReasons: string;
@@ -163,6 +188,8 @@ interface PositionRow {
   entry_ts: number;
   entry_price_usd: number;
   entry_liquidity_usd: number;
+  entry_mcap_usd: number | null;
+  exit_mcap_usd: number | null;
   entry_score: number;
   entry_risk_score: number;
   entry_reasons: string;
@@ -195,6 +222,8 @@ function mapPosition(row: PositionRow): Position {
     entryTs: row.entry_ts,
     entryPriceUsd: row.entry_price_usd,
     entryLiquidityUsd: row.entry_liquidity_usd,
+    entryMcapUsd: row.entry_mcap_usd,
+    exitMcapUsd: row.exit_mcap_usd,
     entryScore: row.entry_score,
     entryRiskScore: row.entry_risk_score,
     entryReasons: row.entry_reasons,
@@ -224,6 +253,7 @@ export interface NewPosition {
   symbol: string;
   entryTs: number;
   entryLiquidityUsd: number;
+  entryMcapUsd: number | null;
   entryScore: number;
   entryRiskScore: number;
   entryReasons: string;
@@ -234,9 +264,9 @@ export function insertPosition(db: Db, p: NewPosition): Position {
   const result = db
     .prepare(
       `INSERT INTO positions (mode, chain, mint, symbol, status, entry_ts, entry_price_usd,
-         entry_liquidity_usd, entry_score, entry_risk_score, entry_reasons,
+         entry_liquidity_usd, entry_mcap_usd, entry_score, entry_risk_score, entry_reasons,
          sol_spent, usd_spent, tokens_bought, tokens_qty, peak_price_usd, last_price_usd)
-       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       p.mode,
@@ -246,6 +276,7 @@ export function insertPosition(db: Db, p: NewPosition): Position {
       p.entryTs,
       p.fill.priceUsd,
       p.entryLiquidityUsd,
+      p.entryMcapUsd,
       p.entryScore,
       p.entryRiskScore,
       p.entryReasons,
@@ -323,6 +354,7 @@ export function applySellFill(
   fill: SellFill,
   reason: string,
   nowTs: number,
+  exitMcapUsd: number | null = null,
 ): { position: Position; closed: boolean; applied: boolean } {
   const remaining = Math.max(0, position.tokensQty - fill.tokensSold);
   const dustThreshold = position.tokensBought * 1e-6;
@@ -339,10 +371,11 @@ export function applySellFill(
     changes = db
       .prepare(
         `UPDATE positions SET tokens_qty = 0, sol_received = ?, usd_received = ?, status = 'closed',
-           exit_ts = ?, exit_price_usd = ?, exit_reason = ?, pnl_sol = ?, pnl_usd = ?, pnl_pct = ?
+           exit_ts = ?, exit_price_usd = ?, exit_reason = ?, pnl_sol = ?, pnl_usd = ?, pnl_pct = ?,
+           exit_mcap_usd = ?
          WHERE id = ? AND status = 'open'`,
       )
-      .run(solReceived, usdReceived, nowTs, fill.priceUsd, reason, pnlSol, pnlUsd, pnlPct, position.id)
+      .run(solReceived, usdReceived, nowTs, fill.priceUsd, reason, pnlSol, pnlUsd, pnlPct, exitMcapUsd, position.id)
       .changes;
   } else {
     changes = db
@@ -370,6 +403,10 @@ export interface OrderRecord {
   solAmount: number;
   tokenAmount: number;
   priceUsd: number;
+  /** Market cap do token no momento da ordem (tentativa ou execução). */
+  mcapUsd: number | null;
+  /** Onde executou: 'jupiter' | 'pumpportal' | 'paper' (null = falhou antes). */
+  venue: string | null;
   txSig: string | null;
   ok: boolean;
   error?: string;
@@ -377,8 +414,8 @@ export interface OrderRecord {
 
 export function recordOrder(db: Db, o: OrderRecord): void {
   db.prepare(
-    `INSERT INTO orders (position_id, ts, mode, side, mint, sol_amount, token_amount, price_usd, tx_sig, ok, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO orders (position_id, ts, mode, side, mint, sol_amount, token_amount, price_usd, mcap_usd, venue, tx_sig, ok, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     o.positionId,
     o.ts,
@@ -388,6 +425,8 @@ export function recordOrder(db: Db, o: OrderRecord): void {
     o.solAmount,
     o.tokenAmount,
     o.priceUsd,
+    o.mcapUsd,
+    o.venue,
     o.txSig,
     o.ok ? 1 : 0,
     o.error ?? null,

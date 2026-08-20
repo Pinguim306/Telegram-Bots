@@ -99,6 +99,12 @@ export interface TokenAnalysis {
   report: RiskReport;
 }
 
+
+/** Market cap "melhor esforço" de um snapshot (mcap, senão FDV, senão null). */
+function snapMcap(snap: PairSnapshot | null): number | null {
+  return snap?.marketCapUsd ?? snap?.fdvUsd ?? null;
+}
+
 const LAST_SOL_USD_KEY = 'last_sol_usd';
 
 export class TraderEngine {
@@ -309,18 +315,26 @@ export class TraderEngine {
         solAmount: fill.solReceived,
         tokenAmount: fill.tokensSold,
         priceUsd: fill.priceUsd,
+        mcapUsd: snapMcap(snap),
+        venue: fill.venue ?? null,
         txSig: fill.txSig,
         ok: true,
       });
-      this.settleSell(fresh, fill, reason, nowTs);
+      this.settleSell(fresh, fill, reason, nowTs, snapMcap(snap));
     } catch (err) {
       await this.handleSellFailure(fresh, portionPct, snap, solUsd, reason, nowTs, err as Error);
     }
   }
 
   /** Contabiliza um fill de venda: fecha/parcial, estatística diária, cooldown. */
-  private settleSell(fresh: Position, fill: SellFill, reason: string, nowTs: number): void {
-    const { position, closed, applied } = applySellFill(this.db, fresh, fill, reason, nowTs);
+  private settleSell(
+    fresh: Position,
+    fill: SellFill,
+    reason: string,
+    nowTs: number,
+    exitMcapUsd: number | null = null,
+  ): void {
+    const { position, closed, applied } = applySellFill(this.db, fresh, fill, reason, nowTs, exitMcapUsd);
     if (!applied) {
       this.log.warn(
         { mint: fresh.mint, reason },
@@ -389,6 +403,8 @@ export class TraderEngine {
       solAmount: 0,
       tokenAmount: 0,
       priceUsd: snap.priceUsd,
+      mcapUsd: snapMcap(snap),
+      venue: null,
       txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
       ok: false,
       error: err.message,
@@ -404,6 +420,7 @@ export class TraderEngine {
         { tokensSold: fresh.tokensQty, solReceived: 0, usdReceived: 0, priceUsd: 0, txSig: null, soldAll: true },
         `${reason} (reconciliado: carteira sem saldo)`,
         nowTs,
+        snapMcap(snap),
       );
       return;
     }
@@ -429,6 +446,7 @@ export class TraderEngine {
           },
           `${reason} (reconciliado pós-timeout)`,
           nowTs,
+          snapMcap(snap),
         );
         return;
       }
@@ -625,6 +643,8 @@ export class TraderEngine {
         solAmount: size,
         tokenAmount: 0,
         priceUsd: snap.priceUsd,
+        mcapUsd: snapMcap(snap),
+        venue: null,
         txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
         ok: false,
         error: (err as Error).message,
@@ -679,6 +699,7 @@ export class TraderEngine {
       symbol: snap.symbol,
       entryTs: nowTs,
       entryLiquidityUsd: snap.liquidityUsd ?? 0,
+      entryMcapUsd: snapMcap(snap),
       entryScore,
       entryRiskScore: riskScore,
       entryReasons,
@@ -693,6 +714,8 @@ export class TraderEngine {
       solAmount: fill.solSpent,
       tokenAmount: fill.tokensQty,
       priceUsd: fill.priceUsd,
+      mcapUsd: snapMcap(snap),
+      venue: fill.venue ?? null,
       txSig: fill.txSig,
       ok: true,
     });
