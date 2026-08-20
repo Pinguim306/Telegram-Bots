@@ -116,6 +116,7 @@ const cleanRugcheck: RugcheckSummary = {
 
 function fakeSources(state: { snap: PairSnapshot | null }): Sources {
   return {
+    pumpportal: async () => [],
     trending: async (): Promise<Candidate[]> => [{ mint: MINT, symbol: 'PUMP', sources: ['gt-trending'] }],
     newPools: async () => [],
     boosts: async () => [],

@@ -54,6 +54,8 @@ import type {
  */
 
 export interface Sources {
+  /** Watchlist do PumpPortal (tempo real). Vem PRIMEIRO na descoberta. */
+  pumpportal(): Promise<Candidate[]>;
   trending(): Promise<Candidate[]>;
   newPools(): Promise<Candidate[]>;
   boosts(): Promise<Candidate[]>;
@@ -466,7 +468,11 @@ export class TraderEngine {
 
   private async discover(open: Position[], nowTs: number): Promise<Candidate[]> {
     const d = this.cfg.discovery;
+    // Ordem importa: o teto maxCandidatesPerTick corta o FIM da lista mesclada,
+    // então a fonte em tempo real (PumpPortal) entra primeiro — um mint recém-
+    // graduado não pode ser o cortado em favor de um trending genérico.
     const tasks: Promise<Candidate[]>[] = [];
+    if (d.pumpportal.enabled) tasks.push(this.sources.pumpportal());
     if (d.geckoTrending) tasks.push(this.sources.trending());
     if (d.geckoNew) tasks.push(this.sources.newPools());
     if (d.dexscreenerBoosts) tasks.push(this.sources.boosts());
