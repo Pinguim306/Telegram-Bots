@@ -19,7 +19,7 @@
       "incubationMin": 3
     },
     "sourceTtlSec": 60,
-    "maxCandidatesPerTick": 90,
+    "maxCandidatesPerTick": 200,
     "excludeMints": [
       "So11111111111111111111111111111111111111112",
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
