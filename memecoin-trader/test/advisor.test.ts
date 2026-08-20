@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildBrief, SlidingWindowLimiter, verdictSchema, type AdvisorInput } from '../src/advisor.js';
+import {
+  buildBrief,
+  buildSystemPrompt,
+  SlidingWindowLimiter,
+  verdictSchema,
+  type AdvisorInput,
+} from '../src/advisor.js';
+import { loadTraderConfig } from '../src/config.js';
 import type { PairSnapshot } from '../src/types.js';
 
 function snap(overrides: Partial<PairSnapshot> = {}): PairSnapshot {
@@ -81,6 +88,40 @@ describe('buildBrief', () => {
   });
 });
 
+describe('buildSystemPrompt', () => {
+  it('descreve a estratégia com os números do config VIGENTE — nunca fixos no texto', () => {
+    // Visto em produção: faixa de mcap escrita à mão no prompt fez a IA
+    // reprovar token dentro da faixa nova depois que o operador mudou os
+    // gates pelo painel ("Mcap 4.3k está fora da faixa alvo (15-30k)").
+    const cfg = loadTraderConfig();
+    cfg.entry.gates.minMarketCapUsd = 4000;
+    cfg.entry.gates.maxMarketCapUsd = 30000;
+    cfg.exit.takeProfitPct = 12;
+    cfg.exit.stopLossPct = 9;
+    cfg.exit.maxHoldMin = 30;
+
+    const prompt = buildSystemPrompt(cfg);
+    expect(prompt).toContain('US$ 4.000');
+    expect(prompt).toContain('US$ 30.000');
+    expect(prompt).toContain('+12%');
+    expect(prompt).toContain('-9%');
+    expect(prompt).toContain('30 minutos');
+    expect(prompt).not.toContain('15k');
+
+    // 0 = sem piso/teto tem que virar texto, não "US$ 0".
+    cfg.entry.gates.minMarketCapUsd = 0;
+    cfg.entry.gates.maxMarketCapUsd = 0;
+    const openEnded = buildSystemPrompt(cfg);
+    expect(openEnded).toContain('sem piso');
+    expect(openEnded).toContain('sem teto');
+  });
+
+  it('avisa que o top10 de token de curve pode incluir o vault', () => {
+    const brief = buildBrief(input());
+    expect(brief).toContain('vault da bonding curve');
+  });
+});
+
 describe('verdictSchema', () => {
   it('aceita o formato do veredito e rejeita fora do range', () => {
     expect(
@@ -98,18 +139,21 @@ describe('verdictSchema', () => {
 describe('SlidingWindowLimiter', () => {
   it('trava no teto e libera quando a janela de 1h desliza', () => {
     let clock = 0;
-    const limiter = new SlidingWindowLimiter(3, () => clock);
-    expect(limiter.tryAcquire()).toBe(true);
-    expect(limiter.tryAcquire()).toBe(true);
-    expect(limiter.tryAcquire()).toBe(true);
-    expect(limiter.tryAcquire()).toBe(false);
+    const limiter = new SlidingWindowLimiter(() => clock);
+    expect(limiter.tryAcquire(3)).toBe(true);
+    expect(limiter.tryAcquire(3)).toBe(true);
+    expect(limiter.tryAcquire(3)).toBe(true);
+    expect(limiter.tryAcquire(3)).toBe(false);
 
     // 59 minutos depois: as 3 chamadas continuam dentro da janela.
     clock = 59 * 60_000;
-    expect(limiter.tryAcquire()).toBe(false);
+    expect(limiter.tryAcquire(3)).toBe(false);
 
     // 61 minutos depois da primeira: a janela deslizou, libera de novo.
     clock = 61 * 60_000;
-    expect(limiter.tryAcquire()).toBe(true);
+    expect(limiter.tryAcquire(3)).toBe(true);
+
+    // Teto mudado pelo painel em execução vale na hora.
+    expect(limiter.tryAcquire(1)).toBe(false);
   });
 });

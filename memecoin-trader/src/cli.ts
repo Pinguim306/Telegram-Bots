@@ -55,6 +55,11 @@ Modo: definido por TRADER_MODE no .env (paper é o padrão — e é onde se come
 
 interface Ctx {
   cfg: TraderConfig;
+  /**
+   * Config VIVO: o painel troca `cfgBox.current` ao salvar, e quem precisa dos
+   * valores vigentes (o advisor de IA monta o prompt a cada chamada) lê daqui.
+   */
+  cfgBox: { current: TraderConfig };
   env: TraderEnv;
   db: Db;
   chain: SolanaChain;
@@ -97,12 +102,14 @@ async function buildCtx(): Promise<Ctx> {
     ? new PumpPortalFeed(cfg.discovery.pumpportal, logger)
     : null;
 
+  const cfgBox = { current: cfg };
+
   // Filtro de IA: só liga com a seção ai.enabled E a chave no .env. Sem chave,
   // avisa uma vez e segue — o bot nunca depende da IA para operar.
   let advisor: Advisor | null = null;
   if (cfg.ai.enabled) {
     if (env.anthropicApiKey) {
-      advisor = new ClaudeAdvisor(cfg.ai, env.anthropicApiKey, logger);
+      advisor = new ClaudeAdvisor(() => cfgBox.current, env.anthropicApiKey, logger);
       logger.info(
         { model: cfg.ai.model, minConfidence: cfg.ai.minConfidence },
         'Filtro de IA ligado — segunda opinião do Claude antes de cada compra',
@@ -123,7 +130,7 @@ async function buildCtx(): Promise<Ctx> {
     logger,
     advisor,
   );
-  return { cfg, env, db, chain, broker, engine, pumpportal };
+  return { cfg, cfgBox, env, db, chain, broker, engine, pumpportal };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -144,6 +151,7 @@ async function cmdRun(): Promise<void> {
         walletAddress: ctx.chain.walletAddress(),
         configPath: resolve(projectRoot, 'config', 'trader.json'),
         applyConfig: (cfg) => {
+          ctx.cfgBox.current = cfg;
           ctx.engine.updateConfig(cfg);
           ctx.broker.updateConfig?.(cfg.execution, cfg.sizing);
         },

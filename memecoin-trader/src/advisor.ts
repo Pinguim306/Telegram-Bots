@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import type { AiConfig } from './config.js';
+import type { TraderConfig } from './config.js';
 import type { Logger } from './log.js';
 import type { RiskReport } from './risk.js';
 import type { PairSnapshot } from './types.js';
@@ -51,37 +51,50 @@ export interface Advisor {
 }
 
 /**
- * Janela deslizante de 1h — trava de custo. Exportada para teste.
+ * Janela deslizante de 1h — trava de custo. O teto é passado a cada chamada
+ * porque o painel pode mudá-lo em execução. Exportada para teste.
  */
 export class SlidingWindowLimiter {
   private calls: number[] = [];
 
-  constructor(
-    private readonly maxPerHour: number,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+  constructor(private readonly now: () => number = () => Date.now()) {}
 
-  tryAcquire(): boolean {
+  tryAcquire(maxPerHour: number): boolean {
     const cutoff = this.now() - 3_600_000;
     this.calls = this.calls.filter((t) => t > cutoff);
-    if (this.calls.length >= this.maxPerHour) return false;
+    if (this.calls.length >= maxPerHour) return false;
     this.calls.push(this.now());
     return true;
   }
 }
 
-const SYSTEM_PROMPT = `Você é o analista final de um bot de scalp de memecoins recém-nascidas na Solana (bonding curve do pump.fun e recém-graduadas no pumpswap).
+const fmtUsd = (v: number) => `US$ ${Math.round(v).toLocaleString('pt-BR')}`;
 
-A estratégia: entrar em tokens de market cap baixo (US$ 15k–30k) com volume acelerando, alvo de +10%, stop de -12%, segurando no máximo 45 minutos. Trades pequenos, giro alto.
+/**
+ * Prompt montado a partir da configuração ATUAL — nunca com números fixos.
+ * Visto em produção: a faixa de mcap escrita à mão no prompt fez a IA reprovar
+ * token dentro da faixa nova ("Mcap 4.3k está fora da faixa alvo (15-30k)")
+ * depois que o operador mudou os gates pelo painel. Exportada para teste.
+ */
+export function buildSystemPrompt(cfg: TraderConfig): string {
+  const g = cfg.entry.gates;
+  const mcapMin = g.minMarketCapUsd > 0 ? fmtUsd(g.minMarketCapUsd) : 'sem piso';
+  const mcapMax = g.maxMarketCapUsd > 0 ? fmtUsd(g.maxMarketCapUsd) : 'sem teto';
+  return `Você é o analista final de um bot de scalp de memecoins recém-nascidas na Solana (bonding curve do pump.fun e recém-graduadas no pumpswap).
 
-O candidato que você recebe JÁ passou por gates quantitativos (liquidez, volume, ritmo, idade, market cap), por um score de momentum e por uma análise de risco de rug (authorities, extensões, holders, RugCheck). Seu papel NÃO é repetir esses filtros — é julgar o que os números isolados não dizem:
+A estratégia ATUAL do operador (venha sempre destes números — não assuma outros): market cap alvo entre ${mcapMin} e ${mcapMax}, alvo de lucro +${cfg.exit.takeProfitPct}%, stop de -${cfg.exit.stopLossPct}%, segurando no máximo ${cfg.exit.maxHoldMin} minutos. Trades pequenos, giro alto.
+
+O candidato que você recebe JÁ passou por gates quantitativos (liquidez, volume, ritmo, idade, market cap — ele ESTÁ dentro da faixa configurada), por um score de momentum e por uma análise de risco de rug (authorities, extensões, holders, RugCheck). Seu papel NÃO é repetir esses filtros — é julgar o que os números isolados não dizem:
 
 1. TIMING: o momentum está NASCENDO ou você está vendo o topo de um pump? Variação de 5m muito alta com 1h achatada = chegando tarde. O erro histórico deste bot foi comprar picos e devolver no stop.
 2. ORGANICIDADE: a razão compras/vendas e o padrão de volume parecem demanda real ou wash trading/bots? Volume enorme com poucos holders é suspeito.
-3. COERÊNCIA: idade × market cap × volume × holders contam uma história plausível? Um token de 5 minutos com mcap de 25k e 300 holders é diferente de um com 12 holders.
-4. ASSIMETRIA: no preço atual, ainda existe espaço realista para +10% antes da multidão sair?
+3. COERÊNCIA: idade × market cap × volume × holders contam uma história plausível para a faixa configurada?
+4. ASSIMETRIA: no preço atual, ainda existe espaço realista para +${cfg.exit.takeProfitPct}% antes da multidão sair?
+
+Atenção em token de bonding curve: o percentual do top 10 holders costuma INCLUIR o vault da própria curve — concentração alta ali não é, por si só, insider.
 
 Seja seletivo: pular custa pouco (sempre haverá outro candidato em minutos); comprar tarde custa o stop. Em dúvida real, pule com confiança baixa. Responda APENAS no formato estruturado pedido, com reason curta em português.`;
+}
 
 /** Monta o resumo compacto que a IA julga. Exportada para teste. */
 export function buildBrief(input: AdvisorInput): string {
@@ -106,7 +119,10 @@ export function buildBrief(input: AdvisorInput): string {
     scoreRisco: `${report.score}/100 (quanto menor, melhor)`,
     flagsRisco: report.flags.map((f) => `[${f.severity}] ${f.label}`).join('; ') || 'nenhuma',
     holders: input.holderCount ?? 'desconhecido',
-    top10Pct: input.top10Pct ?? 'desconhecido',
+    top10Pct:
+      input.top10Pct !== null
+        ? `${input.top10Pct}${input.curve ? ' (pode incluir o vault da bonding curve)' : ''}`
+        : 'desconhecido',
     lpLockedPct: input.lpLockedPct ?? 'desconhecido',
   };
   return Object.entries(lines)
@@ -116,41 +132,49 @@ export function buildBrief(input: AdvisorInput): string {
 
 export class ClaudeAdvisor implements Advisor {
   private readonly client: Anthropic;
-  private readonly limiter: SlidingWindowLimiter;
+  private readonly limiter = new SlidingWindowLimiter();
 
+  /**
+   * `getCfg` em vez de um config congelado: o painel troca a configuração em
+   * execução, e tanto os parâmetros da IA (modelo, effort, teto) quanto a
+   * estratégia descrita no prompt (faixa de mcap, alvo, stop) precisam
+   * acompanhar — o prompt é montado a cada chamada com os valores vigentes.
+   */
   constructor(
-    private readonly cfg: AiConfig,
+    private readonly getCfg: () => TraderConfig,
     apiKey: string,
     private readonly log: Logger,
   ) {
-    this.client = new Anthropic({
-      apiKey,
-      timeout: cfg.timeoutSec * 1000,
-      maxRetries: 1,
-    });
-    this.limiter = new SlidingWindowLimiter(cfg.maxCallsPerHour);
+    this.client = new Anthropic({ apiKey, maxRetries: 1 });
   }
 
   async judge(input: AdvisorInput): Promise<AdvisorVerdict | null> {
-    if (!this.limiter.tryAcquire()) {
+    const cfg = this.getCfg();
+    if (!this.limiter.tryAcquire(cfg.ai.maxCallsPerHour)) {
       this.log.warn(
-        { maxCallsPerHour: this.cfg.maxCallsPerHour },
+        { maxCallsPerHour: cfg.ai.maxCallsPerHour },
         'IA: teto de chamadas/hora atingido — seguindo sem segunda opinião',
       );
       return null;
     }
     try {
-      const response = await this.client.messages.parse({
-        model: this.cfg.model,
-        max_tokens: 4000,
-        // System estável com cache: só o brief varia entre chamadas.
-        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-        output_config: {
-          effort: this.cfg.effort,
-          format: zodOutputFormat(verdictSchema),
+      const response = await this.client.messages.parse(
+        {
+          model: cfg.ai.model,
+          max_tokens: 4000,
+          // System estável (só muda quando o config muda) com cache: só o
+          // brief varia entre chamadas.
+          system: [
+            { type: 'text', text: buildSystemPrompt(cfg), cache_control: { type: 'ephemeral' } },
+          ],
+          output_config: {
+            effort: cfg.ai.effort,
+            format: zodOutputFormat(verdictSchema),
+          },
+          messages: [{ role: 'user', content: `Candidato a compra AGORA:\n\n${buildBrief(input)}` }],
         },
-        messages: [{ role: 'user', content: `Candidato a compra AGORA:\n\n${buildBrief(input)}` }],
-      });
+        { timeout: cfg.ai.timeoutSec * 1000 },
+      );
       const verdict = response.parsed_output;
       if (!verdict) {
         this.log.warn({ mint: input.snap.mint }, 'IA: resposta sem parse — seguindo sem ela');
