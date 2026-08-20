@@ -54,12 +54,42 @@ import type {
  */
 
 export interface Sources {
+  /** Watchlist do PumpPortal (tempo real). Vem PRIMEIRO na descoberta. */
+  pumpportal(): Promise<Candidate[]>;
   trending(): Promise<Candidate[]>;
   newPools(): Promise<Candidate[]>;
   boosts(): Promise<Candidate[]>;
   pairs(mints: string[]): Promise<Map<string, PairSnapshot>>;
   rugcheck(mint: string): Promise<RugcheckSummary>;
   solPriceUsd(): Promise<number | null>;
+}
+
+/**
+ * Cacheia uma fonte de descoberta por `ttlMs`. Existe porque com tick curto
+ * (15s) consultar o GeckoTerminal a cada tick estoura o rate limit gratuito e
+ * a descoberta morre inteira em 429 — trending não muda a cada 15s mesmo.
+ * Se a fonte falhar, serve o resultado anterior por até 5×TTL antes de
+ * propagar o erro: candidato de 1 minuto atrás é melhor que nenhum.
+ */
+export function cachedSource<T>(
+  fn: () => Promise<T[]>,
+  ttlMs: number,
+  now: () => number = () => Date.now(),
+): () => Promise<T[]> {
+  let last: T[] | null = null;
+  let lastAt = 0;
+  return async () => {
+    if (ttlMs > 0 && last !== null && now() - lastAt < ttlMs) return last;
+    try {
+      const fresh = await fn();
+      last = fresh;
+      lastAt = now();
+      return fresh;
+    } catch (err) {
+      if (ttlMs > 0 && last !== null && now() - lastAt < ttlMs * 5) return last;
+      throw err;
+    }
+  };
 }
 
 export interface TokenAnalysis {
@@ -438,7 +468,11 @@ export class TraderEngine {
 
   private async discover(open: Position[], nowTs: number): Promise<Candidate[]> {
     const d = this.cfg.discovery;
+    // Ordem importa: o teto maxCandidatesPerTick corta o FIM da lista mesclada,
+    // então a fonte em tempo real (PumpPortal) entra primeiro — um mint recém-
+    // graduado não pode ser o cortado em favor de um trending genérico.
     const tasks: Promise<Candidate[]>[] = [];
+    if (d.pumpportal.enabled) tasks.push(this.sources.pumpportal());
     if (d.geckoTrending) tasks.push(this.sources.trending());
     if (d.geckoNew) tasks.push(this.sources.newPools());
     if (d.dexscreenerBoosts) tasks.push(this.sources.boosts());

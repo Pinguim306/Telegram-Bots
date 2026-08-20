@@ -15,8 +15,9 @@ import {
   fetchTopBoosts,
 } from './datasources/dexscreener.js';
 import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.js';
+import { PumpPortalFeed } from './datasources/pumpportal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
-import { TraderEngine, type Sources } from './engine.js';
+import { cachedSource, TraderEngine, type Sources } from './engine.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
 import { loadKeypair } from './wallet.js';
@@ -49,13 +50,20 @@ interface Ctx {
   chain: SolanaChain;
   broker: Broker;
   engine: TraderEngine;
+  /** Feed websocket do pump.fun — só é ligado no `run` (processos one-shot não têm o que ouvir). */
+  pumpportal: PumpPortalFeed | null;
 }
 
-function buildSources(cfg: TraderConfig): Sources {
+function buildSources(cfg: TraderConfig, pumpportal: PumpPortalFeed | null): Sources {
+  // As fontes de DESCOBERTA por HTTP são cacheadas (rate limit do GeckoTerminal);
+  // enriquecimento e preço do SOL continuam frescos a cada tick. O PumpPortal é
+  // push (websocket) — a watchlist dele já é o "cache".
+  const ttlMs = cfg.discovery.sourceTtlSec * 1000;
   return {
-    trending: fetchTrendingPools,
-    newPools: fetchNewPools,
-    boosts: fetchTopBoosts,
+    pumpportal: async () => pumpportal?.candidates() ?? [],
+    trending: cachedSource(fetchTrendingPools, ttlMs),
+    newPools: cachedSource(fetchNewPools, ttlMs),
+    boosts: cachedSource(fetchTopBoosts, ttlMs),
     pairs: (mints) => fetchPairsForMints(mints),
     rugcheck: (mint) => fetchRugcheck(mint, cfg.risk.rugcheckTimeoutMs),
     solPriceUsd: fetchSolPriceUsd,
@@ -75,8 +83,11 @@ async function buildCtx(): Promise<Ctx> {
     env.mode === 'live'
       ? new LiveBroker(chain, jupiter, cfg.execution, logger)
       : new PaperBroker(db, cfg.execution, cfg.sizing);
-  const engine = new TraderEngine(cfg, db, broker, chain, buildSources(cfg), logger);
-  return { cfg, env, db, chain, broker, engine };
+  const pumpportal = cfg.discovery.pumpportal.enabled
+    ? new PumpPortalFeed(cfg.discovery.pumpportal, logger)
+    : null;
+  const engine = new TraderEngine(cfg, db, broker, chain, buildSources(cfg, pumpportal), logger);
+  return { cfg, env, db, chain, broker, engine, pumpportal };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -86,11 +97,16 @@ async function buildCtx(): Promise<Ctx> {
 async function cmdRun(): Promise<void> {
   const ctx = await buildCtx();
   printModeBanner(ctx);
+  ctx.pumpportal?.start();
   process.on('SIGINT', () => {
     logger.info('SIGINT — encerrando após o tick atual');
+    ctx.pumpportal?.stop();
     ctx.engine.stop();
   });
-  process.on('SIGTERM', () => ctx.engine.stop());
+  process.on('SIGTERM', () => {
+    ctx.pumpportal?.stop();
+    ctx.engine.stop();
+  });
   await ctx.engine.runLoop();
 }
 

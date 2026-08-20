@@ -11,6 +11,13 @@
     "geckoTrending": true,
     "geckoNew": true,
     "dexscreenerBoosts": true,
+    "pumpportal": {
+      "enabled": true,
+      "newMints": true,
+      "migrations": true,
+      "watchWindowMin": 90
+    },
+    "sourceTtlSec": 60,
     "maxCandidatesPerTick": 30,
     "excludeMints": [
       "So11111111111111111111111111111111111111112",

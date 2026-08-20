@@ -9,7 +9,8 @@ Projeto autocontido: tem `package.json`, testes e configuração próprios e nã
 nada fora desta pasta.
 
 ```
-GeckoTerminal (trending + new pools)   DexScreener (boosts)
+PumpPortal (websocket: mints novos     GeckoTerminal (trending + new pools)
+e graduações do pump.fun, tempo real)  DexScreener (boosts)
               └──────────────┬──────────────┘
                              ▼
                   candidatos (dedupe + cooldown)
@@ -99,15 +100,26 @@ mint no bloco zero (isso é território de bots com websocket dedicado e é onde
 vivem os bundlers). Entrar no minuto 3–10 de um token subindo é o que este
 desenho faz bem.
 
-### 1. Descoberta
+### 1. Descoberta — redundante por desenho
 
-Três fontes gratuitas, todas configuráveis em `discovery`:
+Quatro fontes gratuitas e independentes, todas configuráveis em `discovery`; qualquer
+uma pode cair sem derrubar as outras:
 
-| Fonte | O que traz |
-| --- | --- |
-| GeckoTerminal `trending_pools` | O que o mercado está olhando agora |
-| GeckoTerminal `new_pools` | Lançamentos recentes |
-| DexScreener `token-boosts` | Boosts pagos (sinal fraco sozinho — é comprável — mas indica atividade) |
+| Fonte | O que traz | Como |
+| --- | --- | --- |
+| **PumpPortal** (primária) | Cada mint novo e cada **graduação** do pump.fun, no instante em que acontecem | Websocket push — sem polling, sem rate limit |
+| GeckoTerminal `trending_pools` | O que o mercado inteiro está olhando | HTTP, cacheado por `sourceTtlSec` |
+| GeckoTerminal `new_pools` | Lançamentos recentes fora do pump.fun | HTTP, cacheado |
+| DexScreener `token-boosts` | Boosts pagos (sinal fraco sozinho, mas indica atividade) | HTTP, cacheado |
+
+O PumpPortal alimenta uma **watchlist** com janela de `watchWindowMin` (90min): o mint
+entra ao nascer e é reavaliado pelos gates a cada tick — o bot não compra "porque
+nasceu", compra quando o token cruza os critérios (market cap, volume, momentum) dentro
+da janela. Graduação (curve → pumpswap) rejuvenesce o mint na watchlist, porque é o
+momento clássico de entrada. Se o websocket cair, reconecta com backoff; enquanto isso
+as fontes HTTP seguem descobrindo. As fontes HTTP, por sua vez, servem o último
+resultado quando rate-limitadas (`sourceTtlSec`) — candidato de um minuto atrás é
+melhor que descoberta nenhuma.
 
 WSOL, stablecoins e LSTs estão em `excludeMints`. Token avaliado entra em cooldown
 (`tokenCooldownMin`) para não gastar RugCheck/RPC reanalisando a cada tick.

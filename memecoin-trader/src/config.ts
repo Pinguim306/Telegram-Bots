@@ -26,6 +26,28 @@ const discoverySchema = z.object({
   geckoTrending: z.boolean(),
   geckoNew: z.boolean(),
   dexscreenerBoosts: z.boolean(),
+  /**
+   * Feed websocket do PumpPortal (pump.fun em tempo real) — fonte primária da
+   * estratégia de curve: cada mint novo e cada graduação entram numa watchlist
+   * e são reavaliados pelos gates a cada tick enquanto durar a janela.
+   */
+  pumpportal: z.object({
+    enabled: z.boolean(),
+    /** Assinar mints novos (milhares/dia — os gates filtram). */
+    newMints: z.boolean(),
+    /** Assinar graduações (curve → pumpswap) — o momento clássico de entrada. */
+    migrations: z.boolean(),
+    /** Quantos minutos um mint fica na watchlist sendo reavaliado. */
+    watchWindowMin: z.number().int().min(1),
+  }),
+  /**
+   * Idade máxima do cache das fontes de DESCOBERTA, em segundos (0 = sem cache).
+   * Com tick curto, consultar trending a cada tick estoura o rate limit do
+   * GeckoTerminal (30 req/min) — e trending não muda a cada 15s de qualquer
+   * jeito. O enriquecimento (preço/volume via DexScreener) continua fresco por
+   * tick; só a LISTA de candidatos é cacheada.
+   */
+  sourceTtlSec: z.number().int().min(0),
   maxCandidatesPerTick: z.number().int().min(1).max(60),
   excludeMints: z.array(z.string()),
 });
