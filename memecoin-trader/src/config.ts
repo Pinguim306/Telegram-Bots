@@ -181,6 +181,30 @@ const executionSchema = z.object({
   paperSlippagePct: z.number().min(0).max(50),
 });
 
+/**
+ * Segunda opinião por IA (Claude) como ÚLTIMO filtro antes da compra: o
+ * candidato já passou nos gates, no score e no risco — a IA julga a qualidade
+ * da entrada (momentum cedo ou tarde? pressão orgânica ou bot?) com o contexto
+ * completo. Fail-open: IA indisponível NUNCA trava o bot — segue sem ela.
+ */
+const aiSchema = z.object({
+  enabled: z.boolean(),
+  model: z.string(),
+  /** Profundidade de raciocínio (low = mais rápido/barato). Janela de scalp é curta. */
+  effort: z.enum(['low', 'medium', 'high']),
+  /** Confiança mínima (0–100) do veredito "comprar" para a compra prosseguir. */
+  minConfidence: z.number().min(0).max(100),
+  /** Teto de chamadas por hora — trava de custo. Excedeu = segue sem IA. */
+  maxCallsPerHour: z.number().int().min(1),
+  timeoutSec: z.number().int().min(5),
+});
+
+/** Painel web local (só 127.0.0.1 — nunca exposto para a rede). */
+const dashboardSchema = z.object({
+  enabled: z.boolean(),
+  port: z.number().int().min(1).max(65535),
+});
+
 export const traderFileSchema = z.object({
   $comment: z.string().optional(),
   loop: loopSchema,
@@ -190,6 +214,16 @@ export const traderFileSchema = z.object({
   sizing: sizingSchema,
   exit: exitSchema,
   execution: executionSchema,
+  // .default: config antigo (sem as seções novas) continua válido.
+  ai: aiSchema.default({
+    enabled: true,
+    model: 'claude-opus-5',
+    effort: 'low',
+    minConfidence: 65,
+    maxCallsPerHour: 60,
+    timeoutSec: 30,
+  }),
+  dashboard: dashboardSchema.default({ enabled: true, port: 3877 }),
 });
 
 export type TraderConfig = z.infer<typeof traderFileSchema>;
@@ -198,6 +232,7 @@ export type RiskConfig = TraderConfig['risk'];
 export type SizingConfig = TraderConfig['sizing'];
 export type ExitConfig = TraderConfig['exit'];
 export type ExecutionConfig = TraderConfig['execution'];
+export type AiConfig = TraderConfig['ai'];
 
 export function loadTraderConfig(path = resolve(projectRoot, 'config', 'trader.json')): TraderConfig {
   let raw: unknown;
@@ -221,6 +256,8 @@ export interface TraderEnv {
   rpcUrls: string[];
   jupiterBaseUrl: string;
   jupiterApiKey?: string;
+  /** Chave da API da Anthropic — liga o filtro de IA quando ai.enabled=true. */
+  anthropicApiKey?: string;
   dataDir: string;
 }
 
@@ -251,6 +288,7 @@ export function loadEnv(): TraderEnv {
       '',
     ),
     jupiterApiKey: envOrUndefined('JUPITER_API_KEY'),
+    anthropicApiKey: envOrUndefined('ANTHROPIC_API_KEY'),
     dataDir: resolve(projectRoot, process.env.DATA_DIR ?? './data'),
   };
 }

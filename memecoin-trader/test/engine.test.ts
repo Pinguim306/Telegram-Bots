@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PaperBroker } from '../src/brokers.js';
 import { loadTraderConfig } from '../src/config.js';
 import { getDailyStats, listClosedPositions, listOpenPositions, openTraderDb, type Db } from '../src/db.js';
+import type { Advisor, AdvisorVerdict } from '../src/advisor.js';
 import { cachedSource, TraderEngine, type Sources } from '../src/engine.js';
 import type {
   Candidate,
@@ -107,6 +108,16 @@ class MarkSpyBroker extends PaperBroker {
   markSol: number | null = null;
   override async markValueSol(_mint: string, _tokensQty: number): Promise<number | null> {
     return this.markSol;
+  }
+}
+
+/** Advisor de teste: devolve sempre o mesmo veredito (ou null = IA fora do ar). */
+class FakeAdvisor implements Advisor {
+  calls = 0;
+  constructor(private readonly verdict: AdvisorVerdict | null) {}
+  async judge(): Promise<AdvisorVerdict | null> {
+    this.calls++;
+    return this.verdict;
   }
 }
 
@@ -268,6 +279,71 @@ describe('TraderEngine', () => {
     await engine.tick(T0 + 60);
     expect(listOpenPositions(db, 'paper')).toHaveLength(0);
     expect(broker.urgentSeen).toEqual([true]);
+  });
+
+  it('IA reprovando ("pular") bloqueia a compra e aparece no funil como gate "ia"', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const advisor = new FakeAdvisor({ decision: 'pular', confidence: 90, reason: 'topo do pump' });
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log, advisor);
+
+    await engine.tick(T0);
+    expect(advisor.calls).toBe(1);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    expect(engine.lastTick!.gateTally['ia']).toBe(1);
+    expect(await broker.balanceSol()).toBe(cfg.sizing.paperStartBalanceSol);
+  });
+
+  it('IA "comprar" com confiança abaixo do mínimo também bloqueia', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const advisor = new FakeAdvisor({
+      decision: 'comprar',
+      confidence: cfg.ai.minConfidence - 1,
+      reason: 'sinal fraco',
+    });
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log, advisor);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+  });
+
+  it('IA aprovando compra — e o veredito fica gravado nos motivos da posição', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const advisor = new FakeAdvisor({ decision: 'comprar', confidence: 88, reason: 'momentum nascendo' });
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log, advisor);
+
+    await engine.tick(T0);
+    const open = listOpenPositions(db, 'paper');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.entryReasons).toContain('IA 88%: momentum nascendo');
+  });
+
+  it('IA fora do ar (veredito null) é FAIL-OPEN: a compra segue pelos critérios quantitativos', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const advisor = new FakeAdvisor(null);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log, advisor);
+
+    await engine.tick(T0);
+    expect(advisor.calls).toBe(1);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+  });
+
+  it('pausado pelo painel: gestão continua, novas entradas não acontecem', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    engine.setPaused(true);
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    expect(engine.lastTick!.blocked).toContain('pausado');
+
+    engine.setPaused(false);
+    await engine.tick(T0 + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
   });
 
   it('marca executável manda nas saídas: tela mentindo -60% não vende; marca -20% vende', async () => {

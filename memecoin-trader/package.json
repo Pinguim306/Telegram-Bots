@@ -17,6 +17,7 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
     "@solana/web3.js": "^1.98.4",
     "better-sqlite3": "^13.0.1",
     "bs58": "^6.0.0",

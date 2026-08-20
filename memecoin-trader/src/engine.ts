@@ -1,3 +1,4 @@
+import type { Advisor } from './advisor.js';
 import { NoBalanceError } from './brokers.js';
 import { UnknownTxOutcomeError } from './chains/solana/index.js';
 import type { TraderConfig } from './config.js';
@@ -108,20 +109,57 @@ function snapMcap(snap: PairSnapshot | null): number | null {
 
 const LAST_SOL_USD_KEY = 'last_sol_usd';
 
+/** Foto do último tick — o que o painel web mostra sem refazer trabalho nenhum. */
+export interface TickSummary {
+  ts: number;
+  solUsd: number;
+  blocked: string | null;
+  candidates: number;
+  withPair: number;
+  eligible: number;
+  analyzed: number;
+  bought: number;
+  gateTally: Record<string, number>;
+}
+
 export class TraderEngine {
   private stopped = false;
+  private paused = false;
+  /** Última foto do funil — consumida pelo painel web. */
+  lastTick: TickSummary | null = null;
 
   constructor(
-    private readonly cfg: TraderConfig,
+    private cfg: TraderConfig,
     private readonly db: Db,
     private readonly broker: Broker,
     private readonly chain: ChainAdapter,
     private readonly sources: Sources,
     private readonly log: Logger,
+    private readonly advisor: Advisor | null = null,
   ) {}
 
   stop(): void {
     this.stopped = true;
+  }
+
+  /** Pausa NOVAS entradas (painel web). A gestão das posições abertas continua. */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.log.info(paused ? 'PAUSADO pelo painel — sem novas compras' : 'Retomado pelo painel');
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Troca o config em execução (salvamento pelo painel). O objeto inteiro é
+   * substituído — o próximo tick já lê os valores novos. O chamador é
+   * responsável por também atualizar o broker (seções execution/sizing).
+   */
+  updateConfig(cfg: TraderConfig): void {
+    this.cfg = cfg;
+    this.log.info('Config recarregado em execução (via painel)');
   }
 
   async runLoop(): Promise<void> {
@@ -153,6 +191,7 @@ export class TraderEngine {
     }
     await this.managePositions(solUsd, nowTs);
     const scan = await this.scanForEntries(solUsd, nowTs);
+    this.lastTick = { ts: nowTs, solUsd, ...scan };
 
     // Heartbeat: uma linha por tick SEMPRE, mesmo sem nenhuma ação. Sem isso,
     // minutos de gates reprovando tudo (normal no perfil de scalp) ficam
@@ -530,6 +569,10 @@ export class TraderEngine {
       bought: 0,
       gateTally: {} as Record<string, number>,
     };
+    if (this.paused) {
+      stats.blocked = 'pausado pelo painel';
+      return stats;
+    }
     const balance = await this.broker.balanceSol();
     const daily = getDailyStats(this.db, nowTs);
     const open = listOpenPositions(this.db, this.broker.mode);
@@ -575,7 +618,15 @@ export class TraderEngine {
 
     for (const { cand, snap, entry } of scored.slice(0, this.cfg.loop.candidatesPerTick)) {
       stats.analyzed++;
-      const bought = await this.tryEnter(cand, snap, entry, solUsd, daily.realizedPnlSol, nowTs);
+      const bought = await this.tryEnter(
+        cand,
+        snap,
+        entry,
+        solUsd,
+        daily.realizedPnlSol,
+        nowTs,
+        stats.gateTally,
+      );
       if (bought) stats.bought++;
     }
     return stats;
@@ -645,8 +696,10 @@ export class TraderEngine {
     solUsd: number,
     dailyPnlSol: number,
     nowTs: number,
+    tally?: Record<string, number>,
   ): Promise<boolean> {
-    const analysis = await this.analyzeToken(cand.mint, isCurvePair(snap.dexId, this.cfg.entry));
+    const curve = isCurvePair(snap.dexId, this.cfg.entry);
+    const analysis = await this.analyzeToken(cand.mint, curve);
     const { report } = analysis;
 
     upsertTokenLog(
@@ -674,6 +727,45 @@ export class TraderEngine {
       return false;
     }
 
+    // ÚLTIMO filtro: segunda opinião da IA, com o dossiê completo já coletado.
+    // Veredito null = IA indisponível → fail-open, a compra segue pelos
+    // critérios quantitativos (o bot nunca depende da IA para operar).
+    let aiNote = '';
+    if (this.advisor) {
+      const rc = analysis.rugcheck;
+      const verdict = await this.advisor.judge({
+        snap,
+        sources: cand.sources,
+        entryScore: entry.score,
+        entryReasons: entry.reasons,
+        report,
+        holderCount:
+          (rc.available ? rc.holderCount : null) ?? analysis.holders?.holderCount ?? null,
+        top10Pct: (rc.available ? rc.top10Pct : null) ?? analysis.holders?.top10Pct ?? null,
+        lpLockedPct: rc.available ? rc.lpLockedPct : null,
+        curve,
+      });
+      if (verdict) {
+        const approved =
+          verdict.decision === 'comprar' && verdict.confidence >= this.cfg.ai.minConfidence;
+        this.log.info(
+          {
+            mint: cand.mint,
+            symbol: snap.symbol,
+            decisao: verdict.decision,
+            confianca: verdict.confidence,
+            motivo: verdict.reason,
+          },
+          approved ? 'IA aprovou a entrada' : 'IA reprovou a entrada',
+        );
+        if (!approved) {
+          if (tally) tally['ia'] = (tally['ia'] ?? 0) + 1;
+          return false;
+        }
+        aiNote = ` · IA ${verdict.confidence}%: ${verdict.reason}`;
+      }
+    }
+
     // Capacidade reavaliada AQUI: compras anteriores deste mesmo tick já podem
     // ter consumido saldo ou o teto de posições.
     const balanceNow = await this.broker.balanceSol();
@@ -694,7 +786,15 @@ export class TraderEngine {
 
     try {
       const fill = await this.broker.buy(cand.mint, size, snap, solUsd);
-      this.settleBuy(cand.mint, snap, entry.score, report.score, entry.reasons.join(', '), fill, nowTs);
+      this.settleBuy(
+        cand.mint,
+        snap,
+        entry.score,
+        report.score,
+        entry.reasons.join(', ') + aiNote,
+        fill,
+        nowTs,
+      );
       return true;
     } catch (err) {
       recordOrder(this.db, {
@@ -727,7 +827,7 @@ export class TraderEngine {
             snap,
             entry.score,
             report.score,
-            `${entry.reasons.join(', ')} (adotada pós-timeout)`,
+            `${entry.reasons.join(', ')}${aiNote} (adotada pós-timeout)`,
             {
               tokensQty: balance,
               solSpent: size,

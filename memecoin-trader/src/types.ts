@@ -1,3 +1,5 @@
+import type { ExecutionConfig, SizingConfig } from './config.js';
+
 /**
  * Tipos compartilhados entre descoberta, risco, estratégia e execução.
  *
@@ -147,6 +149,11 @@ export interface Broker {
   readonly mode: TradeMode;
   /** Saldo em SOL disponível para operar (paper: saldo simulado persistido). */
   balanceSol(): Promise<number>;
+  /**
+   * Aplica um config salvo pelo painel em execução (slippage, sizing...).
+   * Opcional: implementações de teste podem ignorar.
+   */
+  updateConfig?(exec: ExecutionConfig, sizing: SizingConfig): void;
   /**
    * Valor EXECUTÁVEL da posição agora, em SOL — a quote real de venda no
    * agregador, não o preço de tela. null = indisponível (paper, sem rota,
