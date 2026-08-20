@@ -26,8 +26,10 @@ describe('config/trader.json', () => {
     );
   });
 
-  it('a posição padrão é pequena — memecoin não é lugar de all-in', () => {
-    expect(cfg.sizing.positionPctOfBalance).toBeLessThanOrEqual(10);
+  it('a posição não vira all-in — teto de 25% do saldo por trade', () => {
+    // 20% é escolha do operador (posições de ~0.2 SOL numa carteira de ~1 SOL);
+    // acima de 25% uma sequência de 4 stops zera a banca — a trava fica.
+    expect(cfg.sizing.positionPctOfBalance).toBeLessThanOrEqual(25);
     expect(cfg.sizing.maxDailyLossSol).toBeGreaterThan(0);
   });
 

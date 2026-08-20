@@ -116,7 +116,7 @@
     "rugcheckTimeoutMs": 8000
   },
   "sizing": {
-    "positionPctOfBalance": 10,
+    "positionPctOfBalance": 20,
     "maxPositionSol": 0.5,
     "minPositionSol": 0.01,
     "maxOpenPositions": 6,
