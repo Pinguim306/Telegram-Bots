@@ -202,13 +202,19 @@ export class LiveBroker implements Broker {
     if (!wallet) throw new Error('Modo live sem carteira carregada');
 
     const tokensBefore = await this.chain.tokenBalanceUi(mint);
+    // Slippage de emergência TAMBÉM na compra de fallback: ele só dispara na
+    // janela pós-graduação, onde o preço move >5% entre quote e execução
+    // (visto em produção: ExceededSlippage com gap de 19%). Compra reprovada
+    // não custa nada (simulação barra antes do envio), mas perde exatamente a
+    // janela que o fallback existe para capturar. O preço de entrada REAL é
+    // medido por delta de saldo — TP/SL seguem honestos sobre o fill de fato.
     const txBytes = await fetchTradeLocalTx({
       publicKey: wallet,
       action: 'buy',
       mint,
       amount: solAmount,
       denominatedInSol: true,
-      slippagePct: this.exec.slippageBps / 100,
+      slippagePct: this.exec.emergencySlippageBps / 100,
       priorityFeeSol: this.exec.maxPriorityFeeLamports / LAMPORTS_PER_SOL,
     });
     const txSig = await this.chain.signSendAndConfirm(

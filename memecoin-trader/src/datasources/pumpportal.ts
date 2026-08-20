@@ -42,16 +42,25 @@ export function parsePumpPortalMessage(raw: unknown): ParsedPumpEvent | null {
 }
 
 /**
- * Watchlist com janela deslizante: guarda os mints vistos nos últimos
- * `watchWindowMin` minutos, mais novos primeiro (o teto de candidatos por
- * tick corta o FIM da lista — os recém-nascidos não podem ser os cortados).
+ * Watchlist com INCUBAÇÃO: o pump.fun minta ~19 tokens/minuto — emitir os
+ * recém-nascidos primeiro afogaria o teto de candidatos com tokens de
+ * segundos de vida que nenhum gate aprova, enquanto os que sobreviveram e
+ * estão subindo (a janela real do scalp, 3–25min) nunca seriam avaliados.
+ * Visto em produção: aptosNosGates=0 em todos os ticks.
+ *
+ * Regras de emissão:
+ *   - mint novo só é emitido depois de `incubationMin` (maturou o suficiente
+ *     para ter par no indexador e passar do gate de idade);
+ *   - GRADUAÇÃO fura a incubação e vem PRIMEIRO — é o evento de maior sinal;
+ *   - dentro de cada grupo, mais novo primeiro (o teto corta o fim da lista).
  */
 export class CandidateBuffer {
   private entries = new Map<string, { candidate: Candidate; ts: number }>();
 
   constructor(
     private readonly watchWindowMin: number,
-    private readonly maxEntries = 500,
+    private readonly incubationMin: number,
+    private readonly maxEntries = 2000,
     private readonly now: () => number = () => Date.now(),
   ) {}
 
@@ -76,15 +85,23 @@ export class CandidateBuffer {
     }
   }
 
-  /** Mints ainda dentro da janela, mais novos primeiro. */
+  /** Graduações primeiro, depois mints incubados; mais novos primeiro em cada grupo. */
   candidates(): Candidate[] {
-    const cutoff = this.now() - this.watchWindowMin * 60_000;
-    const out: Candidate[] = [];
+    const now = this.now();
+    const cutoff = now - this.watchWindowMin * 60_000;
+    const readyAt = now - this.incubationMin * 60_000;
+    const migrations: Candidate[] = [];
+    const matured: Candidate[] = [];
     for (const [mint, entry] of this.entries) {
-      if (entry.ts < cutoff) this.entries.delete(mint);
-      else out.push(entry.candidate);
+      if (entry.ts < cutoff) {
+        this.entries.delete(mint);
+        continue;
+      }
+      if (entry.candidate.sources.includes('pp-migration')) migrations.push(entry.candidate);
+      else if (entry.ts <= readyAt) matured.push(entry.candidate);
+      // Ainda incubando: fica no buffer para os próximos ticks.
     }
-    return out.reverse();
+    return [...migrations.reverse(), ...matured.reverse()];
   }
 }
 
@@ -100,6 +117,8 @@ export interface PumpPortalConfig {
   newMints: boolean;
   migrations: boolean;
   watchWindowMin: number;
+  /** Minutos que um mint novo incuba antes de ser emitido para avaliação. */
+  incubationMin: number;
   url?: string;
 }
 
@@ -113,7 +132,7 @@ export class PumpPortalFeed {
     private readonly cfg: PumpPortalConfig,
     private readonly log: Logger,
   ) {
-    this.buffer = new CandidateBuffer(cfg.watchWindowMin);
+    this.buffer = new CandidateBuffer(cfg.watchWindowMin, cfg.incubationMin);
   }
 
   start(): void {

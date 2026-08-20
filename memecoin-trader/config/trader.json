@@ -15,10 +15,11 @@
       "enabled": true,
       "newMints": true,
       "migrations": true,
-      "watchWindowMin": 90
+      "watchWindowMin": 90,
+      "incubationMin": 3
     },
     "sourceTtlSec": 60,
-    "maxCandidatesPerTick": 30,
+    "maxCandidatesPerTick": 200,
     "excludeMints": [
       "So11111111111111111111111111111111111111112",
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -36,10 +37,10 @@
       "curveDexIds": ["pumpfun"],
       "minLiquidityUsd": 10000,
       "maxLiquidityUsd": 100000,
-      "minVolume1hUsd": 25000,
+      "minVolume1hUsd": 8000,
       "minAgeMin": 3,
       "maxAgeHours": 24,
-      "minTxns1h": 150,
+      "minTxns1h": 80,
       "minBuyRatio1h": 0.55,
       "minMarketCapUsd": 15000,
       "maxMarketCapUsd": 30000
@@ -94,7 +95,7 @@
   },
 
   "execution": {
-    "slippageBps": 300,
+    "slippageBps": 500,
     "emergencySlippageBps": 1500,
     "pumpportalFallback": true,
     "maxPriorityFeeLamports": 2000000,

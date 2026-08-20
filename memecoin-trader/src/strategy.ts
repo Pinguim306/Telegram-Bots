@@ -19,6 +19,8 @@ export interface EntryResult {
   eligible: boolean;
   /** Motivo da reprovação no gate — vai para o log, é o que calibra os filtros. */
   rejection?: string;
+  /** Id estável do gate que reprovou (para agregar no heartbeat). */
+  rejectionId?: string;
   score: number;
   reasons: string[];
 }
@@ -29,7 +31,9 @@ export function evaluateEntry(
   cfg: EntryConfig,
 ): EntryResult {
   const rejection = checkGates(snap, cfg);
-  if (rejection) return { eligible: false, rejection, score: 0, reasons: [] };
+  if (rejection) {
+    return { eligible: false, rejection: rejection[1], rejectionId: rejection[0], score: 0, reasons: [] };
+  }
 
   let score = 0;
   const reasons: string[] = [];
@@ -67,7 +71,9 @@ export function evaluateEntry(
         passed = turnover >= (p.minRatio ?? 2);
         break;
       case 'trending':
-        passed = sources.includes('gt-trending');
+        // Graduação no pump.fun É o sinal de tendência da estratégia de curve —
+        // candidato do PumpPortal nunca teria como pontuar só com gt-trending.
+        passed = sources.includes('gt-trending') || sources.includes('pp-migration');
         break;
     }
     if (passed) {
@@ -84,59 +90,59 @@ export function isCurvePair(dexId: string, cfg: EntryConfig): boolean {
   return cfg.gates.curveDexIds.includes(dexId);
 }
 
-function checkGates(snap: PairSnapshot, cfg: EntryConfig): string | null {
+function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | null {
   const g = cfg.gates;
-  if (snap.priceUsd <= 0) return 'sem preço';
+  if (snap.priceUsd <= 0) return ['sem_preco', 'sem preço'];
   if (g.allowedDexIds.length > 0 && !g.allowedDexIds.includes(snap.dexId)) {
-    return `dex ${snap.dexId} fora de allowedDexIds`;
+    return ['dex', `dex ${snap.dexId} fora de allowedDexIds`];
   }
 
   const curve = isCurvePair(snap.dexId, cfg);
   if (!curve) {
     // Na ENTRADA, liquidez desconhecida reprova (conservador): não se compra o
     // que não se sabe se dá para vender. Na SAÍDA a regra é a oposta — ver evaluateExit.
-    if (snap.liquidityUsd === null) return 'liquidez desconhecida';
+    if (snap.liquidityUsd === null) return ['liq_null', 'liquidez desconhecida'];
     if (snap.liquidityUsd < g.minLiquidityUsd) {
-      return `liquidez $${snap.liquidityUsd.toFixed(0)} < $${g.minLiquidityUsd}`;
+      return ['liq_min', `liquidez $${snap.liquidityUsd.toFixed(0)} < $${g.minLiquidityUsd}`];
     }
     if (g.maxLiquidityUsd > 0 && snap.liquidityUsd > g.maxLiquidityUsd) {
-      return `liquidez $${snap.liquidityUsd.toFixed(0)} > $${g.maxLiquidityUsd}`;
+      return ['liq_max', `liquidez $${snap.liquidityUsd.toFixed(0)} > $${g.maxLiquidityUsd}`];
     }
   }
   // Na curve não há gate de liquidez: o DexScreener não reporta `liquidity`
   // para o par da curve (estrutural). A venda de volta na curve é garantida
   // pelo programa; o piso de qualidade vira o minMarketCapUsd abaixo.
   if (snap.vol1hUsd < g.minVolume1hUsd) {
-    return `volume 1h $${snap.vol1hUsd.toFixed(0)} < $${g.minVolume1hUsd}`;
+    return ['volume', `volume 1h $${snap.vol1hUsd.toFixed(0)} < $${g.minVolume1hUsd}`];
   }
   // Idade desconhecida não reprova: rejeitar por não saber silenciaria tokens
   // legítimos que o indexador ainda não datou. As DEMAIS defesas continuam valendo.
   if (snap.ageMin !== null) {
     if (snap.ageMin < g.minAgeMin) {
-      return `idade ${snap.ageMin.toFixed(0)}min < ${g.minAgeMin}min`;
+      return ['idade_min', `idade ${snap.ageMin.toFixed(0)}min < ${g.minAgeMin}min`];
     }
     if (g.maxAgeHours > 0 && snap.ageMin > g.maxAgeHours * 60) {
-      return `idade ${(snap.ageMin / 60).toFixed(0)}h > ${g.maxAgeHours}h`;
+      return ['idade_max', `idade ${(snap.ageMin / 60).toFixed(0)}h > ${g.maxAgeHours}h`];
     }
   }
   const txns1h = snap.buys1h + snap.sells1h;
-  if (txns1h < g.minTxns1h) return `txns 1h ${txns1h} < ${g.minTxns1h}`;
+  if (txns1h < g.minTxns1h) return ['txns', `txns 1h ${txns1h} < ${g.minTxns1h}`];
   const buyRatio = txns1h > 0 ? snap.buys1h / txns1h : 0;
   if (buyRatio < g.minBuyRatio1h) {
-    return `buy ratio 1h ${(buyRatio * 100).toFixed(0)}% < ${(g.minBuyRatio1h * 100).toFixed(0)}%`;
+    return ['ratio', `buy ratio 1h ${(buyRatio * 100).toFixed(0)}% < ${(g.minBuyRatio1h * 100).toFixed(0)}%`];
   }
   const mcap = snap.marketCapUsd ?? snap.fdvUsd;
   if (g.minMarketCapUsd > 0) {
     // Piso duro na curve: sem mcap conhecido ou abaixo do piso é recém-mintado —
     // o terreno de sniper/bundler onde momentum de 5min ainda é só o deployer.
     if (mcap === null) {
-      if (curve) return 'market cap desconhecido';
+      if (curve) return ['mcap_null', 'market cap desconhecido'];
     } else if (mcap < g.minMarketCapUsd) {
-      return `market cap $${mcap.toFixed(0)} < $${g.minMarketCapUsd}`;
+      return ['mcap_min', `market cap $${mcap.toFixed(0)} < $${g.minMarketCapUsd}`];
     }
   }
   if (g.maxMarketCapUsd > 0 && mcap !== null && mcap > g.maxMarketCapUsd) {
-    return `market cap $${mcap.toFixed(0)} > $${g.maxMarketCapUsd}`;
+    return ['mcap_max', `market cap $${mcap.toFixed(0)} > $${g.maxMarketCapUsd}`];
   }
   return null;
 }
