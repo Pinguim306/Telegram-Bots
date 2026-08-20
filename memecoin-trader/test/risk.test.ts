@@ -128,6 +128,29 @@ describe('assessRisk', () => {
     expect(report.flags.some((f) => f.id === 'top10_concentrated')).toBe(true);
   });
 
+  it('bonding curve: concentração de holders não se aplica — a "maior conta" é o vault da curve', () => {
+    const report = assessRisk(
+      input({
+        curve: true,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+        holders: { top1Pct: 85, top10Pct: 97, holderCount: null, source: 'onchain' },
+      }),
+      cfg,
+    );
+    expect(report.verdict).toBe('approved');
+    expect(
+      report.flags.filter((f) => f.id.startsWith('top') || f.id === 'holders_missing'),
+    ).toHaveLength(0);
+  });
+
+  it('na curve, mint/freeze/extensões continuam vetando — são a defesa real', () => {
+    const report = assessRisk(
+      input({ curve: true, onchain: { ...cleanOnchain, freezeAuthorityActive: true } }),
+      cfg,
+    );
+    expect(report.verdict).toBe('vetoed');
+  });
+
   it('prefere o top10 do RugCheck (que exclui vaults) ao do RPC cru', () => {
     // RPC cru mostra 60% (inclui o vault do pool); RugCheck mostra 20%.
     const report = assessRisk(

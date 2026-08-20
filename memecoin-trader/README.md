@@ -72,6 +72,33 @@ que o bot pensaria dele.
 
 ## Como o bot decide
 
+### O perfil padrão: scalp na pump.fun
+
+O config que vem no repositório mira **tokens do pump.fun** — na bonding curve
+(dexId `pumpfun`) e recém-graduados (`pumpswap`) — com trades rápidos: alvo de
++10% vendendo tudo, stop de −12%, tempo máximo de 45min e tick de 15s. Os
+números foram calibrados contra tokens reais na curve (mcap ~$35k, 9 minutos de
+vida, +342% em 5m, 1.400 txns/h — e o mesmo token caiu −55% meia hora depois,
+que é exatamente o motivo dos stops apertados).
+
+Particularidades da curve que o código trata explicitamente:
+
+- **O par da curve não reporta `liquidity`** no DexScreener — é estrutural, não
+  dado faltando. Para DEXes em `curveDexIds` os gates de liquidez são pulados e
+  o piso de qualidade vira `minMarketCapUsd` (a venda de volta na curve é
+  garantida pelo programa — não existe LP para o dev puxar);
+- **A "maior holder" da curve é o vault da própria curve** — as checagens de
+  concentração são desligadas para curve. Mint/freeze authority e extensões
+  Token-2022 continuam vetando integralmente: essas são a defesa real ali;
+- `allowedDexIds` restringe as compras ao pump.fun; esvazie a lista para operar
+  qualquer DEX.
+
+Honestidade sobre velocidade: o bot descobre por **indexadores (polling)**, não
+por stream on-chain. Ele compra o **momentum já visível** da curve — não snipa o
+mint no bloco zero (isso é território de bots com websocket dedicado e é onde
+vivem os bundlers). Entrar no minuto 3–10 de um token subindo é o que este
+desenho faz bem.
+
 ### 1. Descoberta
 
 Três fontes gratuitas, todas configuráveis em `discovery`:
@@ -87,9 +114,10 @@ WSOL, stablecoins e LSTs estão em `excludeMints`. Token avaliado entra em coold
 
 ### 2. Gates de entrada (config `entry.gates`)
 
-Filtros duros de qualidade de mercado: liquidez mínima, volume 1h mínimo, idade mínima
-(os primeiros minutos são dos snipers) e máxima, mínimo de transações, buy ratio e teto
-de market cap (blue chip não é alvo). Reprovou em um, acabou.
+Filtros duros de qualidade de mercado: DEX permitida (`allowedDexIds`), liquidez
+mínima/máxima (fora da curve), volume 1h mínimo, idade mínima (os primeiros minutos são
+dos snipers) e máxima, mínimo de transações, buy ratio e piso/teto de market cap (nem
+recém-mintado, nem blue chip). Reprovou em um, acabou.
 
 ### 3. Score de sinais (config `entry.rules`)
 

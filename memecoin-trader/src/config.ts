@@ -48,6 +48,17 @@ const entryRuleSchema = z.object({
 
 const entrySchema = z.object({
   gates: z.object({
+    /**
+     * DEXes onde o bot pode comprar (dexId do DexScreener). Vazio = todas.
+     * ["pumpfun", "pumpswap"] = só bonding curve do pump.fun e graduados.
+     */
+    allowedDexIds: z.array(z.string()),
+    /**
+     * DEXes de bonding curve (sem pool clássico). Nelas o DexScreener não
+     * reporta `liquidity` — isso é ESTRUTURAL, não dado faltando — então os
+     * gates de liquidez são pulados e o piso vira o market cap.
+     */
+    curveDexIds: z.array(z.string()),
     minLiquidityUsd: z.number().min(0),
     /** 0 = sem teto. */
     maxLiquidityUsd: z.number().min(0),
@@ -57,6 +68,8 @@ const entrySchema = z.object({
     maxAgeHours: z.number().min(0),
     minTxns1h: z.number().int().min(0),
     minBuyRatio1h: z.number().min(0).max(1),
+    /** Piso de market cap (0 = sem piso). Na curve, é a defesa contra recém-mintado. */
+    minMarketCapUsd: z.number().min(0),
     /** 0 = sem teto. */
     maxMarketCapUsd: z.number().min(0),
   }),

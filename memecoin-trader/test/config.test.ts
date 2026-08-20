@@ -39,6 +39,16 @@ describe('config/trader.json', () => {
     expect(cfg.execution.emergencySlippageBps).toBeGreaterThan(cfg.execution.slippageBps);
   });
 
+  it('perfil pump.fun: curve permitida e coerente com allowedDexIds', () => {
+    expect(cfg.entry.gates.allowedDexIds).toContain('pumpfun');
+    expect(cfg.entry.gates.allowedDexIds).toContain('pumpswap');
+    // Toda DEX de curve precisa estar na lista de permitidas, senão o flag é inútil.
+    for (const dex of cfg.entry.gates.curveDexIds) {
+      expect(cfg.entry.gates.allowedDexIds).toContain(dex);
+    }
+    expect(cfg.entry.gates.minMarketCapUsd).toBeLessThan(cfg.entry.gates.maxMarketCapUsd);
+  });
+
   it('WSOL e stablecoins estão fora da lista de compra', () => {
     expect(cfg.discovery.excludeMints).toContain('So11111111111111111111111111111111111111112');
     expect(cfg.discovery.excludeMints).toContain('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');

@@ -34,13 +34,13 @@ function snap(overrides: Partial<PairSnapshot> = {}): PairSnapshot {
     symbol: 'PUMP',
     name: 'Pumping',
     pairAddress: 'Pair1111111111111111111111111111111111111111',
-    dexId: 'raydium',
+    dexId: 'pumpswap',
     quoteSymbol: 'SOL',
     priceUsd: 0.001,
     priceNative: 0.000005,
     liquidityUsd: 80_000,
-    fdvUsd: 900_000,
-    marketCapUsd: 900_000,
+    fdvUsd: 60_000,
+    marketCapUsd: 60_000,
     vol5mUsd: 8_000,
     vol1hUsd: 60_000,
     vol24hUsd: 200_000,
@@ -226,7 +226,7 @@ describe('TraderEngine', () => {
     expect(getDailyStats(db, T0 + 600).realizedPnlSol).toBeCloseTo(-solSpent, 5);
   });
 
-  it('take profit vende com urgent=false; dreno de liquidez vende com urgent=true', async () => {
+  it('take profit (scalp) fecha a posição inteira com urgent=false e realiza o lucro', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const broker = new UrgentSpyBroker(db, cfg.execution, cfg.sizing);
     const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
@@ -235,17 +235,30 @@ describe('TraderEngine', () => {
     expect(listOpenPositions(db, 'paper')).toHaveLength(1);
     const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
 
-    // Preço no take profit (sem drawdown do topo) -> venda parcial NÃO urgente.
+    // Preço no alvo do scalp (sem drawdown do topo) -> vende TUDO, não urgente.
     state.snap = snap({ priceUsd: entryPrice * (1 + cfg.exit.takeProfitPct / 100 + 0.02) });
     await engine.tick(T0 + 60);
-    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
     expect(broker.urgentSeen).toEqual([false]);
 
+    const closed = listClosedPositions(db, 'paper');
+    expect(closed[0]!.exitReason).toContain('take profit');
+    expect(closed[0]!.pnlSol!).toBeGreaterThan(0);
+  });
+
+  it('dreno de liquidez sai com urgent=true', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new UrgentSpyBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+
     // Liquidez despenca abaixo de liquidityDrainPct da entrada -> saída urgente.
-    state.snap = snap({ priceUsd: entryPrice, liquidityUsd: 10_000 });
-    await engine.tick(T0 + 120);
+    state.snap = snap({ liquidityUsd: 10_000 });
+    await engine.tick(T0 + 60);
     expect(listOpenPositions(db, 'paper')).toHaveLength(0);
-    expect(broker.urgentSeen).toEqual([false, true]);
+    expect(broker.urgentSeen).toEqual([true]);
   });
 
   it('fechar por tempo máximo re-arma o cooldown — sem recompra no MESMO tick', async () => {
@@ -256,7 +269,7 @@ describe('TraderEngine', () => {
     await engine.tick(T0);
     expect(listOpenPositions(db, 'paper')).toHaveLength(1);
 
-    // Muito depois do cooldown de análise (90min) expirar: o tempo máximo vende.
+    // Muito depois do cooldown de análise (tokenCooldownMin) expirar: o tempo máximo vende.
     // O token continua trending e passando nos gates — sem o re-arme do cooldown
     // na SAÍDA, o scanForEntries do MESMO tick recompraria na sequência.
     const exitTick = T0 + (cfg.exit.maxHoldMin + 1) * 60;

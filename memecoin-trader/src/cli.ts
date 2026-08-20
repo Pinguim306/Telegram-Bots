@@ -174,7 +174,9 @@ async function cmdCheck(mint: string | undefined): Promise<void> {
     console.log('Sem par negociável no DexScreener (token muito novo ou sem pool).\n');
   }
 
-  const analysis = await ctx.engine.analyzeToken(mint);
+  const curve = snap ? ctx.cfg.entry.gates.curveDexIds.includes(snap.dexId) : false;
+  if (curve) console.log('(bonding curve — gates de liquidez e concentração não se aplicam)\n');
+  const analysis = await ctx.engine.analyzeToken(mint, curve);
   const { report } = analysis;
   const emoji = report.verdict === 'approved' ? '🟢' : report.verdict === 'rejected' ? '🟡' : '🔴';
   console.log(`${emoji} Risco: ${report.score}/100 — ${report.verdict.toUpperCase()}`);

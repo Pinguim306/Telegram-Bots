@@ -1,10 +1,10 @@
 {
-  "$comment": "Todos os limiares do bot. O schema (src/config.ts) valida este arquivo no boot e o teste de config trava valores incoerentes.",
+  "$comment": "Perfil padrão: SCALP de pump.fun — bonding curve (dexId pumpfun) e recém-graduados (pumpswap). Low cap, momentum atual, trades rápidos de ~10%. Calibrado contra tokens reais na curve (ex.: mcap ~$35k, 9min de vida, +300% em 5m, 1400 txns/h). O schema (src/config.ts) valida este arquivo no boot e o teste de config trava valores incoerentes.",
 
   "loop": {
-    "tickSec": 30,
+    "tickSec": 15,
     "candidatesPerTick": 3,
-    "tokenCooldownMin": 90
+    "tokenCooldownMin": 30
   },
 
   "discovery": {
@@ -25,22 +25,25 @@
 
   "entry": {
     "gates": {
-      "minLiquidityUsd": 30000,
-      "maxLiquidityUsd": 0,
+      "allowedDexIds": ["pumpfun", "pumpswap"],
+      "curveDexIds": ["pumpfun"],
+      "minLiquidityUsd": 10000,
+      "maxLiquidityUsd": 100000,
       "minVolume1hUsd": 25000,
-      "minAgeMin": 60,
-      "maxAgeHours": 720,
-      "minTxns1h": 60,
-      "minBuyRatio1h": 0.5,
-      "maxMarketCapUsd": 100000000
+      "minAgeMin": 3,
+      "maxAgeHours": 24,
+      "minTxns1h": 150,
+      "minBuyRatio1h": 0.55,
+      "minMarketCapUsd": 15000,
+      "maxMarketCapUsd": 100000
     },
-    "minScore": 50,
+    "minScore": 55,
     "rules": [
-      { "id": "momentum_5m", "label": "Momentum 5m", "points": 15, "params": { "minPct": 1.5 } },
-      { "id": "momentum_1h", "label": "Momentum 1h", "points": 20, "params": { "minPct": 5 } },
+      { "id": "momentum_5m", "label": "Momentum 5m", "points": 20, "params": { "minPct": 5 } },
+      { "id": "momentum_1h", "label": "Momentum 1h", "points": 20, "params": { "minPct": 15 } },
       { "id": "volume_spike", "label": "Spike de volume 1h", "points": 25, "params": { "minMultiple": 3 } },
-      { "id": "buy_pressure", "label": "Pressão compradora 1h", "points": 20, "params": { "minRatio": 0.6, "minBuys": 30 } },
-      { "id": "turnover", "label": "Giro sobre a liquidez", "points": 10, "params": { "minRatio": 2 } },
+      { "id": "buy_pressure", "label": "Pressão compradora 1h", "points": 20, "params": { "minRatio": 0.55, "minBuys": 80 } },
+      { "id": "turnover", "label": "Giro sobre a liquidez", "points": 10, "params": { "minRatio": 3 } },
       { "id": "trending", "label": "Trending nas fontes", "points": 10, "params": {} }
     ]
   },
@@ -57,15 +60,15 @@
     "maxTop10Pct": 50,
     "minLpLockedPct": 50,
     "maxRugcheckScore": 60,
-    "minHolderCount": 200,
+    "minHolderCount": 30,
     "rugcheckTimeoutMs": 8000
   },
 
   "sizing": {
-    "positionPctOfBalance": 5,
-    "maxPositionSol": 0.25,
+    "positionPctOfBalance": 10,
+    "maxPositionSol": 0.5,
     "minPositionSol": 0.01,
-    "maxOpenPositions": 5,
+    "maxOpenPositions": 6,
     "reserveSol": 0.05,
     "maxDailyLossSol": 0.5,
     "riskScaling": true,
@@ -73,14 +76,14 @@
   },
 
   "exit": {
-    "stopLossPct": 20,
-    "takeProfitPct": 40,
-    "takeProfitSellPct": 50,
-    "trailingActivatePct": 25,
-    "trailingStopPct": 15,
-    "maxHoldMin": 240,
+    "stopLossPct": 12,
+    "takeProfitPct": 10,
+    "takeProfitSellPct": 100,
+    "trailingActivatePct": 6,
+    "trailingStopPct": 5,
+    "maxHoldMin": 45,
     "liquidityDrainPct": 50,
-    "staleTicksToExit": 5
+    "staleTicksToExit": 4
   },
 
   "execution": {

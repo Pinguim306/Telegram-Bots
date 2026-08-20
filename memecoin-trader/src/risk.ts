@@ -19,6 +19,13 @@ export interface RiskInput {
   onchain: OnchainTokenInfo | null;
   holders: HolderStats | null;
   rugcheck: RugcheckSummary;
+  /**
+   * true = token ainda na bonding curve (pump.fun). Muda a leitura de holders:
+   * a maior conta É o vault da curve (estrutural, não insider), então as
+   * checagens de concentração não se aplicam. As checagens de mint/freeze/
+   * extensões continuam valendo integralmente — são a defesa real na curve.
+   */
+  curve?: boolean;
 }
 
 export interface RiskFlag {
@@ -93,26 +100,30 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
 
   // ── holders ─────────────────────────────────────────────────
   // Preferência: dado do RugCheck (exclui vaults de AMM) > leitura crua do RPC.
+  // Na CURVE as checagens de concentração são puladas: a maior conta é o vault
+  // da própria curve, e penalizá-la vetaria todo token pré-graduação.
   const rug = input.rugcheck;
-  const rugTop10 = rug.available ? rug.top10Pct : null;
-  const top10 = rugTop10 ?? input.holders?.top10Pct ?? null;
-  const top1 = rugTop10 !== null ? null : (input.holders?.top1Pct ?? null);
+  if (!input.curve) {
+    const rugTop10 = rug.available ? rug.top10Pct : null;
+    const top10 = rugTop10 ?? input.holders?.top10Pct ?? null;
+    const top1 = rugTop10 !== null ? null : (input.holders?.top1Pct ?? null);
 
-  if (top10 === null) {
-    add('holders_missing', 'medium', 'Distribuição de holders indisponível', 10);
-  } else {
-    if (top10 > cfg.maxTop10Pct) {
-      // Escala com o excesso: 55% concentrado é ruim, 85% é outra categoria de
-      // ruim — e concentração extrema tem que rejeitar sozinha.
-      const points = Math.min(45, 25 + (top10 - cfg.maxTop10Pct));
-      add('top10_concentrated', 'high', `Top 10 holders com ${top10.toFixed(1)}% do supply`, points);
-    } else if (top10 > cfg.maxTop10Pct * 0.75) {
-      add('top10_elevated', 'low', `Top 10 holders com ${top10.toFixed(1)}% do supply`, 8);
+    if (top10 === null) {
+      add('holders_missing', 'medium', 'Distribuição de holders indisponível', 10);
+    } else {
+      if (top10 > cfg.maxTop10Pct) {
+        // Escala com o excesso: 55% concentrado é ruim, 85% é outra categoria de
+        // ruim — e concentração extrema tem que rejeitar sozinha.
+        const points = Math.min(45, 25 + (top10 - cfg.maxTop10Pct));
+        add('top10_concentrated', 'high', `Top 10 holders com ${top10.toFixed(1)}% do supply`, points);
+      } else if (top10 > cfg.maxTop10Pct * 0.75) {
+        add('top10_elevated', 'low', `Top 10 holders com ${top10.toFixed(1)}% do supply`, 8);
+      }
     }
-  }
-  if (top1 !== null && top1 > cfg.maxTop1Pct) {
-    const points = Math.min(35, 20 + (top1 - cfg.maxTop1Pct));
-    add('top1_concentrated', 'high', `Maior holder com ${top1.toFixed(1)}% do supply`, points);
+    if (top1 !== null && top1 > cfg.maxTop1Pct) {
+      const points = Math.min(35, 20 + (top1 - cfg.maxTop1Pct));
+      add('top1_concentrated', 'high', `Maior holder com ${top1.toFixed(1)}% do supply`, points);
+    }
   }
 
   const holderCount = (rug.available ? rug.holderCount : null) ?? input.holders?.holderCount ?? null;

@@ -79,18 +79,33 @@ export function evaluateEntry(
   return { eligible: true, score, reasons };
 }
 
+/** true = o par é de bonding curve (sem pool clássico, sem `liquidity` reportada). */
+export function isCurvePair(dexId: string, cfg: EntryConfig): boolean {
+  return cfg.gates.curveDexIds.includes(dexId);
+}
+
 function checkGates(snap: PairSnapshot, cfg: EntryConfig): string | null {
   const g = cfg.gates;
   if (snap.priceUsd <= 0) return 'sem preço';
-  // Na ENTRADA, liquidez desconhecida reprova (conservador): não se compra o
-  // que não se sabe se dá para vender. Na SAÍDA a regra é a oposta — ver evaluateExit.
-  if (snap.liquidityUsd === null) return 'liquidez desconhecida';
-  if (snap.liquidityUsd < g.minLiquidityUsd) {
-    return `liquidez $${snap.liquidityUsd.toFixed(0)} < $${g.minLiquidityUsd}`;
+  if (g.allowedDexIds.length > 0 && !g.allowedDexIds.includes(snap.dexId)) {
+    return `dex ${snap.dexId} fora de allowedDexIds`;
   }
-  if (g.maxLiquidityUsd > 0 && snap.liquidityUsd > g.maxLiquidityUsd) {
-    return `liquidez $${snap.liquidityUsd.toFixed(0)} > $${g.maxLiquidityUsd}`;
+
+  const curve = isCurvePair(snap.dexId, cfg);
+  if (!curve) {
+    // Na ENTRADA, liquidez desconhecida reprova (conservador): não se compra o
+    // que não se sabe se dá para vender. Na SAÍDA a regra é a oposta — ver evaluateExit.
+    if (snap.liquidityUsd === null) return 'liquidez desconhecida';
+    if (snap.liquidityUsd < g.minLiquidityUsd) {
+      return `liquidez $${snap.liquidityUsd.toFixed(0)} < $${g.minLiquidityUsd}`;
+    }
+    if (g.maxLiquidityUsd > 0 && snap.liquidityUsd > g.maxLiquidityUsd) {
+      return `liquidez $${snap.liquidityUsd.toFixed(0)} > $${g.maxLiquidityUsd}`;
+    }
   }
+  // Na curve não há gate de liquidez: o DexScreener não reporta `liquidity`
+  // para o par da curve (estrutural). A venda de volta na curve é garantida
+  // pelo programa; o piso de qualidade vira o minMarketCapUsd abaixo.
   if (snap.vol1hUsd < g.minVolume1hUsd) {
     return `volume 1h $${snap.vol1hUsd.toFixed(0)} < $${g.minVolume1hUsd}`;
   }
@@ -111,6 +126,15 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): string | null {
     return `buy ratio 1h ${(buyRatio * 100).toFixed(0)}% < ${(g.minBuyRatio1h * 100).toFixed(0)}%`;
   }
   const mcap = snap.marketCapUsd ?? snap.fdvUsd;
+  if (g.minMarketCapUsd > 0) {
+    // Piso duro na curve: sem mcap conhecido ou abaixo do piso é recém-mintado —
+    // o terreno de sniper/bundler onde momentum de 5min ainda é só o deployer.
+    if (mcap === null) {
+      if (curve) return 'market cap desconhecido';
+    } else if (mcap < g.minMarketCapUsd) {
+      return `market cap $${mcap.toFixed(0)} < $${g.minMarketCapUsd}`;
+    }
+  }
   if (g.maxMarketCapUsd > 0 && mcap !== null && mcap > g.maxMarketCapUsd) {
     return `market cap $${mcap.toFixed(0)} > $${g.maxMarketCapUsd}`;
   }
