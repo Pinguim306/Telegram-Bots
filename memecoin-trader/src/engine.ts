@@ -23,7 +23,13 @@ import {
 import type { Logger } from './log.js';
 import { assessRisk, type RiskReport } from './risk.js';
 import { blockReason, positionSizeSol } from './sizing.js';
-import { evaluateEntry, evaluateExit, type EntryResult, type ExitContext } from './strategy.js';
+import {
+  evaluateEntry,
+  evaluateExit,
+  isCurvePair,
+  type EntryResult,
+  type ExitContext,
+} from './strategy.js';
 import type {
   Broker,
   BuyFill,
@@ -466,17 +472,20 @@ export class TraderEngine {
     return out;
   }
 
-  /** Análise completa de segurança de um token. Também usada pelo `check` do CLI. */
-  async analyzeToken(mint: string): Promise<TokenAnalysis> {
+  /**
+   * Análise completa de segurança de um token. Também usada pelo `check` do CLI.
+   * `curve` = token ainda na bonding curve: pula a leitura de top holders (a
+   * maior conta seria o vault da curve — RPC gasto para um dado sem sentido).
+   */
+  async analyzeToken(mint: string, curve = false): Promise<TokenAnalysis> {
     const onchain = await this.chain.getOnchainTokenInfo(mint).catch((err: Error) => {
       this.log.warn({ mint, err: err.message }, 'Leitura on-chain falhou');
       return null;
     });
-    const holders = onchain
-      ? await this.chain.getTopHolders(mint, onchain).catch(() => null)
-      : null;
+    const holders =
+      onchain && !curve ? await this.chain.getTopHolders(mint, onchain).catch(() => null) : null;
     const rugcheck = await this.sources.rugcheck(mint);
-    const report = assessRisk({ onchain, holders, rugcheck }, this.cfg.risk);
+    const report = assessRisk({ onchain, holders, rugcheck, curve }, this.cfg.risk);
     return { onchain, holders, rugcheck, report };
   }
 
@@ -488,7 +497,7 @@ export class TraderEngine {
     dailyPnlSol: number,
     nowTs: number,
   ): Promise<void> {
-    const analysis = await this.analyzeToken(cand.mint);
+    const analysis = await this.analyzeToken(cand.mint, isCurvePair(snap.dexId, this.cfg.entry));
     const { report } = analysis;
 
     upsertTokenLog(
@@ -644,7 +653,7 @@ export class TraderEngine {
     const snap = (await this.sources.pairs([mint])).get(mint);
     if (!snap) throw new Error('Token sem par negociável no indexador');
 
-    const analysis = await this.analyzeToken(mint);
+    const analysis = await this.analyzeToken(mint, isCurvePair(snap.dexId, this.cfg.entry));
     if (analysis.report.verdict !== 'approved' && !force) {
       const flags = analysis.report.flags.map((f) => `  - [${f.severity}] ${f.label}`).join('\n');
       throw new Error(

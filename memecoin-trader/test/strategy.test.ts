@@ -12,13 +12,13 @@ function pumpingSnap(overrides: Partial<PairSnapshot> = {}): PairSnapshot {
     symbol: 'PUMP',
     name: 'Pumping',
     pairAddress: 'Pair1111111111111111111111111111111111111111',
-    dexId: 'raydium',
+    dexId: 'pumpswap',
     quoteSymbol: 'SOL',
     priceUsd: 0.001,
     priceNative: 0.000005,
     liquidityUsd: 80_000,
-    fdvUsd: 900_000,
-    marketCapUsd: 900_000,
+    fdvUsd: 60_000,
+    marketCapUsd: 60_000,
     vol5mUsd: 8_000,
     vol1hUsd: 60_000,
     vol24hUsd: 200_000,
@@ -63,9 +63,47 @@ describe('evaluateEntry — gates', () => {
   });
 
   it('reprova token novo demais — os primeiros minutos são dos snipers', () => {
-    const result = evaluateEntry(pumpingSnap({ ageMin: 10 }), [], cfg.entry);
+    const result = evaluateEntry(pumpingSnap({ ageMin: 1 }), [], cfg.entry);
     expect(result.eligible).toBe(false);
     expect(result.rejection).toContain('idade');
+  });
+
+  it('reprova DEX fora de allowedDexIds — o perfil é pump.fun', () => {
+    const result = evaluateEntry(pumpingSnap({ dexId: 'raydium' }), [], cfg.entry);
+    expect(result.eligible).toBe(false);
+    expect(result.rejection).toContain('dex');
+  });
+
+  it('bonding curve (pumpfun): liquidez ausente é estrutural e NÃO reprova', () => {
+    // O DexScreener não reporta `liquidity` para o par da curve — visto em
+    // token real: mcap $36k, 9min de vida, liquidity ausente, +342% em 5m.
+    const result = evaluateEntry(
+      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: 36_000, fdvUsd: 36_000 }),
+      ['gt-trending'],
+      cfg.entry,
+    );
+    expect(result.eligible).toBe(true);
+    expect(result.score).toBeGreaterThanOrEqual(cfg.entry.minScore);
+  });
+
+  it('curve com market cap abaixo do piso reprova — recém-mintado é terreno de sniper', () => {
+    const result = evaluateEntry(
+      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: 8_000, fdvUsd: 8_000 }),
+      [],
+      cfg.entry,
+    );
+    expect(result.eligible).toBe(false);
+    expect(result.rejection).toContain('market cap');
+  });
+
+  it('curve sem market cap conhecido reprova — sem liquidez E sem mcap não há piso nenhum', () => {
+    const result = evaluateEntry(
+      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: null, fdvUsd: null }),
+      [],
+      cfg.entry,
+    );
+    expect(result.eligible).toBe(false);
+    expect(result.rejection).toContain('desconhecido');
   });
 
   it('reprova token velho demais', () => {
@@ -96,7 +134,7 @@ describe('evaluateEntry — gates', () => {
         change1hPct: 0.5,
         vol1hUsd: 26_000,
         vol24hUsd: 620_000, // baseline alta -> sem spike
-        buys1h: 100,
+        buys1h: 120,
         sells1h: 95,
       }),
       [],
