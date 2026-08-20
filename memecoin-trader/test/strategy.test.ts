@@ -128,6 +128,21 @@ describe('evaluateEntry — gates', () => {
     expect(result.eligible).toBe(false);
   });
 
+
+  it('graduação (pp-migration) pontua a regra trending — candidato do PumpPortal não nasce com handicap', () => {
+    const viaGt = evaluateEntry(pumpingSnap(), ['gt-trending'], cfg.entry);
+    const viaGrad = evaluateEntry(pumpingSnap(), ['pp-new', 'pp-migration'], cfg.entry);
+    const semNada = evaluateEntry(pumpingSnap(), ['pp-new'], cfg.entry);
+    expect(viaGrad.score).toBe(viaGt.score);
+    expect(viaGrad.score).toBeGreaterThan(semNada.score);
+  });
+
+  it('reprovação carrega rejectionId estável para o heartbeat agregar', () => {
+    expect(evaluateEntry(pumpingSnap({ dexId: 'raydium' }), [], cfg.entry).rejectionId).toBe('dex');
+    expect(evaluateEntry(pumpingSnap({ vol1hUsd: 100 }), [], cfg.entry).rejectionId).toBe('volume');
+    expect(evaluateEntry(pumpingSnap({ marketCapUsd: 500_000_000 }), [], cfg.entry).rejectionId).toBe('mcap_max');
+  });
+
   it('token morno passa nos gates mas não soma o score mínimo', () => {
     const result = evaluateEntry(
       pumpingSnap({

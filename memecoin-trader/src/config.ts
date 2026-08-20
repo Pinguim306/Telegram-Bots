@@ -39,6 +39,12 @@ const discoverySchema = z.object({
     migrations: z.boolean(),
     /** Quantos minutos um mint fica na watchlist sendo reavaliado. */
     watchWindowMin: z.number().int().min(1),
+    /**
+     * Minutos de incubação antes de um mint novo ser avaliado. Sem isso, os
+     * ~19 mints/min do pump.fun afogam o teto de candidatos com tokens de
+     * segundos de vida que nenhum gate aprova. Graduações furam a incubação.
+     */
+    incubationMin: z.number().int().min(0),
   }),
   /**
    * Idade máxima do cache das fontes de DESCOBERTA, em segundos (0 = sem cache).
@@ -48,7 +54,7 @@ const discoverySchema = z.object({
    * tick; só a LISTA de candidatos é cacheada.
    */
   sourceTtlSec: z.number().int().min(0),
-  maxCandidatesPerTick: z.number().int().min(1).max(60),
+  maxCandidatesPerTick: z.number().int().min(1).max(300),
   excludeMints: z.array(z.string()),
 });
 
@@ -148,9 +154,10 @@ const exitSchema = z.object({
 const executionSchema = z.object({
   slippageBps: z.number().int().min(10).max(5000),
   /**
-   * Slippage das saídas URGENTES (rug/stop/sem dados). Num pool sendo drenado,
-   * a slippage normal faz toda venda reverter e o bot fica preso dentro do
-   * token — aceitar um preço pior é o que tira o dinheiro de lá.
+   * Slippage das saídas URGENTES (rug/stop/sem dados) e das operações de
+   * FALLBACK via pump.fun (janela pós-graduação). Nos dois casos o preço está
+   * em movimento violento e a slippage normal faz a transação reverter — na
+   * saída isso prende o bot dentro do token; na entrada, perde a janela.
    */
   emergencySlippageBps: z.number().int().min(10).max(10000),
   /**

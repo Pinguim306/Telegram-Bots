@@ -160,6 +160,13 @@ export class TraderEngine {
     if (scan.blocked) {
       this.log.info({ abertas, motivo: scan.blocked }, 'Tick: gestão ok — sem novas entradas');
     } else {
+      // Os 4 gates que mais reprovaram — a resposta permanente para
+      // "por que o bot não está comprando?".
+      const gates = Object.fromEntries(
+        Object.entries(scan.gateTally)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4),
+      );
       this.log.info(
         {
           abertas,
@@ -168,6 +175,7 @@ export class TraderEngine {
           aptosNosGates: scan.eligible,
           analisados: scan.analyzed,
           compras: scan.bought,
+          ...(Object.keys(gates).length > 0 ? { gates } : {}),
         },
         'Tick concluído',
       );
@@ -472,8 +480,17 @@ export class TraderEngine {
     eligible: number;
     analyzed: number;
     bought: number;
+    gateTally: Record<string, number>;
   }> {
-    const stats = { blocked: null as string | null, candidates: 0, withPair: 0, eligible: 0, analyzed: 0, bought: 0 };
+    const stats = {
+      blocked: null as string | null,
+      candidates: 0,
+      withPair: 0,
+      eligible: 0,
+      analyzed: 0,
+      bought: 0,
+      gateTally: {} as Record<string, number>,
+    };
     const balance = await this.broker.balanceSol();
     const daily = getDailyStats(this.db, nowTs);
     const open = listOpenPositions(this.db, this.broker.mode);
@@ -501,6 +518,8 @@ export class TraderEngine {
       stats.withPair++;
       const entry = evaluateEntry(snap, cand.sources, this.cfg.entry);
       if (!entry.eligible) {
+        const id = entry.rejectionId ?? '?';
+        stats.gateTally[id] = (stats.gateTally[id] ?? 0) + 1;
         this.log.debug({ mint: cand.mint, symbol: snap.symbol, gate: entry.rejection }, 'Gate reprovou');
         continue;
       }
