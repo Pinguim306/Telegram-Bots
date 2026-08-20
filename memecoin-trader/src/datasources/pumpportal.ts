@@ -127,6 +127,7 @@ export class PumpPortalFeed {
   private ws: WsLike | null = null;
   private stopped = false;
   private backoffMs = 5_000;
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly cfg: PumpPortalConfig,
@@ -148,6 +149,12 @@ export class PumpPortalFeed {
 
   stop(): void {
     this.stopped = true;
+    // O timer pendente de reconexão seguraria o event loop por até 120s
+    // depois do Ctrl+C — o processo "não morria" por causa dele.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
   }
 
@@ -204,6 +211,8 @@ export class PumpPortalFeed {
     if (this.stopped) return;
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, 120_000);
-    setTimeout(() => this.connect(WS), delay);
+    this.reconnectTimer = setTimeout(() => this.connect(WS), delay);
+    // unref: um timer de reconexão nunca é motivo para manter o processo vivo.
+    this.reconnectTimer.unref?.();
   }
 }
