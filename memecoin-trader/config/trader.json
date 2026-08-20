@@ -42,11 +42,12 @@
       "minVolume1hUsd": 2500,
       "minAgeMin": 3,
       "maxAgeHours": 24,
-      "minTxns1h": 80,
+      "minTxns1h": 30,
       "minBuyRatio1h": 0.55,
       "minMarketCapUsd": 15000,
       "maxMarketCapUsd": 30000,
-      "minVolumePaceUsdPerMin": 500
+      "minVolumePaceUsdPerMin": 500,
+      "minTxnsPerMin": 5
     },
     "minScore": 55,
     "rules": [
@@ -115,7 +116,7 @@
     "rugcheckTimeoutMs": 8000
   },
   "sizing": {
-    "positionPctOfBalance": 10,
+    "positionPctOfBalance": 20,
     "maxPositionSol": 0.5,
     "minPositionSol": 0.01,
     "maxOpenPositions": 6,

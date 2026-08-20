@@ -137,6 +137,15 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | nu
   }
   const txns1h = snap.buys1h + snap.sells1h;
   if (txns1h < g.minTxns1h) return ['txns', `txns 1h ${txns1h} < ${g.minTxns1h}`];
+  // Mesmo raciocínio do gate de ritmo de volume: 80 txns/h exigidas de um token
+  // de 5 minutos é exigir ritmo de ~1000/h — o gate absoluto punia os jovens.
+  if (g.minTxnsPerMin > 0) {
+    const windowMin = snap.ageMin !== null ? Math.max(1, Math.min(snap.ageMin, 60)) : 60;
+    const txnsPace = txns1h / windowMin;
+    if (txnsPace < g.minTxnsPerMin) {
+      return ['txns_ritmo', `txns ${txnsPace.toFixed(1)}/min < ${g.minTxnsPerMin}/min`];
+    }
+  }
   const buyRatio = txns1h > 0 ? snap.buys1h / txns1h : 0;
   if (buyRatio < g.minBuyRatio1h) {
     return ['ratio', `buy ratio 1h ${(buyRatio * 100).toFixed(0)}% < ${(g.minBuyRatio1h * 100).toFixed(0)}%`];
