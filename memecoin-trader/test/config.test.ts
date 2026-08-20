@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { loadTraderConfig, LIVE_ACK_PHRASE, assertLiveAllowed } from '../src/config.js';
+import {
+  loadTraderConfig,
+  traderFileSchema,
+  LIVE_ACK_PHRASE,
+  assertLiveAllowed,
+} from '../src/config.js';
 
 /**
  * Lê o config REAL do repositório. Este teste trava valores incoerentes:
@@ -54,6 +59,23 @@ describe('config/trader.json', () => {
   it('WSOL e stablecoins estão fora da lista de compra', () => {
     expect(cfg.discovery.excludeMints).toContain('So11111111111111111111111111111111111111112');
     expect(cfg.discovery.excludeMints).toContain('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+  });
+
+  it('seções ai e dashboard são coerentes', () => {
+    expect(cfg.ai.minConfidence).toBeGreaterThanOrEqual(0);
+    expect(cfg.ai.minConfidence).toBeLessThanOrEqual(100);
+    expect(cfg.ai.maxCallsPerHour).toBeGreaterThan(0);
+    expect(cfg.dashboard.port).toBeGreaterThan(0);
+  });
+
+  it('config antigo (sem ai/dashboard) continua válido — as seções ganham default', () => {
+    const raw = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
+    delete raw.ai;
+    delete raw.dashboard;
+    const parsed = traderFileSchema.parse(raw);
+    expect(parsed.ai.enabled).toBe(true);
+    expect(parsed.ai.model).toBe('claude-opus-5');
+    expect(parsed.dashboard.port).toBe(3877);
   });
 
   it('as travas de segurança default estão ligadas', () => {

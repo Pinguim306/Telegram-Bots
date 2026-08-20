@@ -37,9 +37,15 @@ export class PaperBroker implements Broker {
 
   constructor(
     private readonly db: Db,
-    private readonly exec: ExecutionConfig,
-    private readonly sizing: SizingConfig,
+    private exec: ExecutionConfig,
+    private sizing: SizingConfig,
   ) {}
+
+  /** Painel salvou config novo — os próximos fills simulados já usam. */
+  updateConfig(exec: ExecutionConfig, sizing: SizingConfig): void {
+    this.exec = exec;
+    this.sizing = sizing;
+  }
 
   async balanceSol(): Promise<number> {
     const stored = kvGet(this.db, PAPER_BALANCE_KEY);
@@ -124,9 +130,14 @@ export class LiveBroker implements Broker {
   constructor(
     private readonly chain: SolanaChain,
     private readonly jupiter: JupiterClient,
-    private readonly exec: ExecutionConfig,
+    private exec: ExecutionConfig,
     private readonly log: Logger,
   ) {}
+
+  /** Painel salvou config novo — slippage/fees das próximas ordens já usam. */
+  updateConfig(exec: ExecutionConfig, _sizing: SizingConfig): void {
+    this.exec = exec;
+  }
 
   async balanceSol(): Promise<number> {
     return this.chain.nativeBalanceSol();

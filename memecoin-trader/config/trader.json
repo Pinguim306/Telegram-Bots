@@ -142,5 +142,17 @@
     "maxPriorityFeeLamports": 2000000,
     "confirmTimeoutSec": 90,
     "paperSlippagePct": 1.5
+  },
+  "ai": {
+    "enabled": true,
+    "model": "claude-opus-5",
+    "effort": "low",
+    "minConfidence": 65,
+    "maxCallsPerHour": 60,
+    "timeoutSec": 30
+  },
+  "dashboard": {
+    "enabled": true,
+    "port": 3877
   }
 }

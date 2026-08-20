@@ -167,7 +167,25 @@ Detalhes de calibração que vieram de dados reais, não de teoria:
   dado do RugCheck, que marca contas conhecidas de AMM, tem preferência; o do RPC é
   fallback com limiar generoso.
 
-### 5. Sizing (config `sizing`)
+### 5. Segunda opinião da IA (config `ai`) — opcional
+
+Com `ai.enabled=true` **e** `ANTHROPIC_API_KEY` no `.env`, cada candidato que passou nos
+gates, no score e no risco ainda enfrenta um último filtro: o Claude (modelo em
+`ai.model`) recebe o dossiê completo — idade, market cap, volume, compras/vendas,
+variações, fontes, score, flags de risco, holders — e julga o que números isolados não
+dizem: **o momentum está nascendo ou é o topo do pump? A pressão parece orgânica ou
+bot?** A compra só prossegue com veredito `comprar` e confiança ≥ `ai.minConfidence`.
+
+Regras do desenho:
+
+- **Fail-open**: IA fora do ar (sem chave, timeout, rate limit) **nunca** trava o bot —
+  a compra segue pelos critérios quantitativos, como sempre;
+- **Trava de custo**: no máximo `ai.maxCallsPerHour` chamadas/hora — excedeu, segue sem IA;
+- O veredito aprovado fica gravado nos motivos da posição (`IA 88%: momentum nascendo`)
+  e as reprovações aparecem no funil do heartbeat como gate `ia`;
+- A resposta é **estruturada** (schema forçado na API) — nada de interpretar prosa.
+
+### 6. Sizing (config `sizing`)
 
 - posição = `positionPctOfBalance`% do saldo, com teto `maxPositionSol`;
 - token mais arriscado → posição menor (`riskScaling`);
@@ -176,7 +194,7 @@ Detalhes de calibração que vieram de dados reais, não de teoria:
 - **circuit breaker**: perda realizada de `maxDailyLossSol` no dia (UTC) desliga compras
   até o dia virar. Vendas continuam funcionando — trava de perda não pode impedir saída.
 
-### 6. Saídas (config `exit`), em ordem de prioridade
+### 7. Saídas (config `exit`), em ordem de prioridade
 
 1. **Dreno de liquidez** — liquidez atual abaixo de `liquidityDrainPct`% da liquidez de
    entrada é rug em andamento; sai antes de qualquer conta de lucro;
@@ -226,6 +244,25 @@ Regras de sobrevivência:
   (com stop loss), venda que aterrissou é contabilizada, e nada é re-executado às cegas.
 - Compra é abortada se o impacto de preço da própria ordem passar de 10% — pool raso
   demais para o seu tamanho.
+
+## Painel web
+
+Com `dashboard.enabled=true` (padrão), o `run` sobe um painel em
+**http://localhost:3877** (porta em `dashboard.port`) — escutando **apenas em
+127.0.0.1**, nunca exposto para a rede, sem nenhum segredo passando por ele.
+
+O que dá para fazer por lá:
+
+- **ver** saldo, PnL do dia, posições abertas (com PnL sobre o baseline executável),
+  histórico de trades e o funil do último tick (candidatos → gates → compras);
+- **pausar/retomar** novas compras (a gestão das posições abertas continua);
+- **vender** qualquer posição aberta (50% ou 100%) com um clique;
+- **editar a configuração inteira** com validação: salvar grava o `trader.json` e aplica
+  em execução na hora (gates, saídas, sizing, IA, slippage). Só as seções
+  `discovery.pumpportal` e `dashboard` pedem restart. Config inválido é recusado com a
+  lista de erros — nada é gravado.
+
+No WSL2 o `localhost` do Windows enxerga o painel normalmente (forwarding automático).
 
 ## Configuração
 

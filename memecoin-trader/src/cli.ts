@@ -1,4 +1,13 @@
-import { assertLiveAllowed, loadEnv, loadTraderConfig, type TraderConfig, type TraderEnv } from './config.js';
+import { resolve } from 'node:path';
+import {
+  assertLiveAllowed,
+  loadEnv,
+  loadTraderConfig,
+  projectRoot,
+  type TraderConfig,
+  type TraderEnv,
+} from './config.js';
+import { ClaudeAdvisor, type Advisor } from './advisor.js';
 import { LiveBroker, PaperBroker } from './brokers.js';
 import { JupiterClient } from './chains/solana/jupiter.js';
 import { SolanaChain } from './chains/solana/index.js';
@@ -18,6 +27,7 @@ import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.j
 import { PumpPortalFeed } from './datasources/pumpportal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
 import { cachedSource, TraderEngine, type Sources } from './engine.js';
+import { startDashboard } from './server.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
 import { loadKeypair } from './wallet.js';
@@ -86,7 +96,33 @@ async function buildCtx(): Promise<Ctx> {
   const pumpportal = cfg.discovery.pumpportal.enabled
     ? new PumpPortalFeed(cfg.discovery.pumpportal, logger)
     : null;
-  const engine = new TraderEngine(cfg, db, broker, chain, buildSources(cfg, pumpportal), logger);
+
+  // Filtro de IA: só liga com a seção ai.enabled E a chave no .env. Sem chave,
+  // avisa uma vez e segue — o bot nunca depende da IA para operar.
+  let advisor: Advisor | null = null;
+  if (cfg.ai.enabled) {
+    if (env.anthropicApiKey) {
+      advisor = new ClaudeAdvisor(cfg.ai, env.anthropicApiKey, logger);
+      logger.info(
+        { model: cfg.ai.model, minConfidence: cfg.ai.minConfidence },
+        'Filtro de IA ligado — segunda opinião do Claude antes de cada compra',
+      );
+    } else {
+      logger.warn(
+        'ai.enabled=true mas ANTHROPIC_API_KEY não está no .env — seguindo SEM o filtro de IA',
+      );
+    }
+  }
+
+  const engine = new TraderEngine(
+    cfg,
+    db,
+    broker,
+    chain,
+    buildSources(cfg, pumpportal),
+    logger,
+    advisor,
+  );
   return { cfg, env, db, chain, broker, engine, pumpportal };
 }
 
@@ -98,6 +134,26 @@ async function cmdRun(): Promise<void> {
   const ctx = await buildCtx();
   printModeBanner(ctx);
   ctx.pumpportal?.start();
+
+  if (ctx.cfg.dashboard.enabled) {
+    try {
+      await startDashboard(ctx.cfg.dashboard.port, {
+        db: ctx.db,
+        engine: ctx.engine,
+        broker: ctx.broker,
+        walletAddress: ctx.chain.walletAddress(),
+        configPath: resolve(projectRoot, 'config', 'trader.json'),
+        applyConfig: (cfg) => {
+          ctx.engine.updateConfig(cfg);
+          ctx.broker.updateConfig?.(cfg.execution, cfg.sizing);
+        },
+        log: logger,
+      });
+    } catch (err) {
+      // Painel indisponível (porta ocupada?) não pode impedir o bot de operar.
+      logger.warn({ err: (err as Error).message }, 'Painel web não subiu — bot segue sem ele');
+    }
+  }
 
   // 1º Ctrl+C: gracioso (termina o tick em andamento e sai).
   // 2º Ctrl+C: forçado — um tick preso numa espera de rede longa (confirmação
