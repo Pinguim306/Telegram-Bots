@@ -102,6 +102,14 @@ class UrgentSpyBroker extends PaperBroker {
   }
 }
 
+/** PaperBroker com marca executável controlável — simula o live, cuja marca vem da quote real. */
+class MarkSpyBroker extends PaperBroker {
+  markSol: number | null = null;
+  override async markValueSol(_mint: string, _tokensQty: number): Promise<number | null> {
+    return this.markSol;
+  }
+}
+
 const cleanRugcheck: RugcheckSummary = {
   available: true,
   rugged: false,
@@ -260,6 +268,49 @@ describe('TraderEngine', () => {
     await engine.tick(T0 + 60);
     expect(listOpenPositions(db, 'paper')).toHaveLength(0);
     expect(broker.urgentSeen).toEqual([true]);
+  });
+
+  it('marca executável manda nas saídas: tela mentindo -60% não vende; marca -20% vende', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new MarkSpyBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    // Tick 1: compra (sem marca ainda — markValueSol só roda na gestão).
+    await engine.tick(T0);
+    const pos = listOpenPositions(db, 'paper')[0]!;
+    const solUsd = 200;
+    // Marca 7% abaixo do preço de entrada: o custo real de entrar (impacto + taxas).
+    const baselinePrice = pos.entryPriceUsd * 0.93;
+    broker.markSol = (baselinePrice * pos.tokensQty) / solUsd;
+
+    // Tick 2: o indexador MENTE -60% (cenário BALDCHUA real). Com marca
+    // disponível, este tick só define o baseline — nada de stop loss.
+    state.snap = snap({ priceUsd: pos.entryPriceUsd * 0.4 });
+    await engine.tick(T0 + 15);
+    const afterBaseline = listOpenPositions(db, 'paper');
+    expect(afterBaseline).toHaveLength(1);
+    expect(afterBaseline[0]!.entryMarkPriceUsd!).toBeCloseTo(baselinePrice, 10);
+    // O pico RESETA para a marca: o pico antigo (preço de tela da entrada)
+    // armaria o trailing num topo que nunca existiu em valor executável.
+    expect(afterBaseline[0]!.peakPriceUsd).toBeCloseTo(baselinePrice, 10);
+
+    // Tick 3: o token some do indexador, mas a marca segue estável -> HOLD,
+    // sem acumular tick "stale" — a quote real é dado de preço de verdade.
+    state.snap = null;
+    await engine.tick(T0 + 30);
+    const held = listOpenPositions(db, 'paper');
+    expect(held).toHaveLength(1);
+    expect(held[0]!.staleTicks).toBe(0);
+
+    // Tick 4: a marca cai 20% do baseline -> stop loss real fecha, e o fill
+    // sai pela marca (não é a perda total do caminho "sumiu do indexador").
+    broker.markSol = (baselinePrice * 0.8 * pos.tokensQty) / solUsd;
+    await engine.tick(T0 + 45);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    const closed = listClosedPositions(db, 'paper')[0]!;
+    expect(closed.exitReason).toContain('stop loss');
+    expect(closed.pnlSol!).toBeLessThan(0);
+    expect(closed.solReceived).toBeGreaterThan(pos.solSpent * 0.5);
   });
 
   it('fechar por tempo máximo re-arma o cooldown — sem recompra no MESMO tick', async () => {

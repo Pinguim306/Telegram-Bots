@@ -147,6 +147,16 @@ export interface Broker {
   readonly mode: TradeMode;
   /** Saldo em SOL disponível para operar (paper: saldo simulado persistido). */
   balanceSol(): Promise<number>;
+  /**
+   * Valor EXECUTÁVEL da posição agora, em SOL — a quote real de venda no
+   * agregador, não o preço de tela. null = indisponível (paper, sem rota,
+   * timeout); o chamador cai para o preço de indexador.
+   *
+   * Existe porque o preço de indexador MENTE na escala de segundos em que
+   * memecoin recém-nascida vive — visto em produção: "stop loss -47%" que
+   * vendeu com +10% real, "take profit +41%" que devolveu -39%.
+   */
+  markValueSol(mint: string, tokensQty: number): Promise<number | null>;
   buy(mint: string, solAmount: number, snap: PairSnapshot, solPriceUsd: number): Promise<BuyFill>;
   /**
    * Vende `portionPct`% da posição. `tokensQty` é a quantidade que o BOT acha

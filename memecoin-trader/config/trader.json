@@ -136,7 +136,7 @@
     "staleTicksToExit": 4
   },
   "execution": {
-    "slippageBps": 500,
+    "slippageBps": 200,
     "emergencySlippageBps": 1500,
     "pumpportalFallback": true,
     "maxPriorityFeeLamports": 2000000,

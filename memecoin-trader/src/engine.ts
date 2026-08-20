@@ -14,6 +14,7 @@ import {
   listOpenPositions,
   markTookProfit,
   recordOrder,
+  setEntryMarkPrice,
   setTokenCooldown,
   updateTickState,
   upsertTokenLog,
@@ -218,31 +219,69 @@ export class TraderEngine {
     for (const pos of open) {
       const snap = snaps.get(pos.mint) ?? null;
 
-      if (snap) {
-        updateTickState(this.db, pos.id, Math.max(pos.peakPriceUsd, snap.priceUsd), snap.priceUsd, 0);
+      // Marca EXECUTÁVEL: o que uma venda real pagaria agora (quote no
+      // agregador). Na escala de segundos de uma memecoin recém-nascida o
+      // preço de indexador atrasa e mente — visto em produção: "stop loss
+      // -47%" que vendeu com +10% real, "take profit +41%" que devolveu -39%.
+      // Quando a marca existe, TODAS as decisões de saída usam ela; o preço
+      // de tela vira só o fallback (e o modo paper, que não tem agregador,
+      // segue por ele).
+      const markSol = await this.broker.markValueSol(pos.mint, pos.tokensQty).catch(() => null);
+      let effSnap = snap;
+      if (markSol !== null && markSol > 0 && pos.tokensQty > 0 && solUsd > 0) {
+        const markPriceUsd = (markSol * solUsd) / pos.tokensQty;
+        effSnap = effSnap
+          ? { ...effSnap, priceUsd: markPriceUsd }
+          : { ...this.syntheticSnap(pos), priceUsd: markPriceUsd };
+
+        if (pos.entryMarkPriceUsd === null) {
+          // Primeira marca pós-compra: vira o BASELINE das saídas. Comparar a
+          // marca com o preço de tela da entrada faria todo trade nascer
+          // "dentro do stop": o custo de entrada (impacto + taxas, 5–10%)
+          // apareceria como queda. O pico também RESETA para a marca — o pico
+          // antigo está em unidades de preço de tela e armaria o trailing num
+          // topo que a posição nunca teve em valor executável.
+          setEntryMarkPrice(this.db, pos.id, markPriceUsd);
+          updateTickState(this.db, pos.id, markPriceUsd, markPriceUsd, 0);
+          this.log.info(
+            {
+              symbol: pos.symbol,
+              entradaTela: pos.entryPriceUsd,
+              baselineExecutavel: markPriceUsd,
+              custoEntradaPct: Number(((markPriceUsd / pos.entryPriceUsd - 1) * 100).toFixed(1)),
+            },
+            'Baseline executável definido — saídas passam a medir contra ele',
+          );
+          continue;
+        }
+      }
+
+      const tickPrice = effSnap?.priceUsd ?? null;
+      if (tickPrice !== null) {
+        updateTickState(this.db, pos.id, Math.max(pos.peakPriceUsd, tickPrice), tickPrice, 0);
       } else {
         updateTickState(this.db, pos.id, pos.peakPriceUsd, pos.lastPriceUsd, pos.staleTicks + 1);
       }
 
       const ctx: ExitContext = {
-        entryPriceUsd: pos.entryPriceUsd,
-        peakPriceUsd: Math.max(pos.peakPriceUsd, snap?.priceUsd ?? 0),
+        entryPriceUsd: pos.entryMarkPriceUsd ?? pos.entryPriceUsd,
+        peakPriceUsd: Math.max(pos.peakPriceUsd, tickPrice ?? 0),
         entryLiquidityUsd: pos.entryLiquidityUsd,
         entryTs: pos.entryTs,
         tookProfit: pos.tookProfit,
         staleTicks: pos.staleTicks,
       };
-      const decision = evaluateExit(ctx, snap, this.cfg.exit, nowTs);
+      const decision = evaluateExit(ctx, effSnap, this.cfg.exit, nowTs);
       if (decision.action === 'hold') continue;
 
-      // Venda sem snapshot (token sumiu do indexador). No live o valor de
-      // verdade sai da quote do Jupiter. No PAPER, o fill simulado vale ZERO:
-      // token que some do indexador costuma ser pool drenado, e creditar o
-      // último preço visto transformaria um rug de -100% em -1,5% — inflando a
-      // estatística paper exatamente nos piores trades e cegando o circuit
-      // breaker diário, que é a base da decisão de ir para live.
+      // Venda sem snapshot (token sumiu do indexador e sem marca). No live o
+      // valor de verdade sai da quote do Jupiter. No PAPER, o fill simulado
+      // vale ZERO: token que some do indexador costuma ser pool drenado, e
+      // creditar o último preço visto transformaria um rug de -100% em -1,5%
+      // — inflando a estatística paper exatamente nos piores trades e cegando
+      // o circuit breaker diário, que é a base da decisão de ir para live.
       const sellSnap =
-        snap ??
+        effSnap ??
         (this.broker.mode === 'paper'
           ? { ...this.syntheticSnap(pos), priceUsd: 0 }
           : this.syntheticSnap(pos));
