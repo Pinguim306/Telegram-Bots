@@ -88,8 +88,10 @@ describe('evaluateEntry — gates', () => {
   });
 
   it('curve com market cap abaixo do piso reprova — recém-mintado é terreno de sniper', () => {
+    // Derivado do config para o teste sobreviver a recalibrações do piso.
+    const belowFloor = cfg.entry.gates.minMarketCapUsd - 1;
     const result = evaluateEntry(
-      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: 8_000, fdvUsd: 8_000 }),
+      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: belowFloor, fdvUsd: belowFloor }),
       [],
       cfg.entry,
     );
