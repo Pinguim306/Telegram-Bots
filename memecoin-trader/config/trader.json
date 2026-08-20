@@ -11,6 +11,7 @@
     "geckoTrending": true,
     "geckoNew": true,
     "dexscreenerBoosts": true,
+    "sourceTtlSec": 60,
     "maxCandidatesPerTick": 30,
     "excludeMints": [
       "So11111111111111111111111111111111111111112",

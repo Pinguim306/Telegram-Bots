@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PaperBroker } from '../src/brokers.js';
 import { loadTraderConfig } from '../src/config.js';
 import { getDailyStats, listClosedPositions, listOpenPositions, openTraderDb, type Db } from '../src/db.js';
-import { TraderEngine, type Sources } from '../src/engine.js';
+import { cachedSource, TraderEngine, type Sources } from '../src/engine.js';
 import type {
   Candidate,
   ChainAdapter,

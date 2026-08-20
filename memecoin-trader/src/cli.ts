@@ -16,7 +16,7 @@ import {
 } from './datasources/dexscreener.js';
 import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
-import { TraderEngine, type Sources } from './engine.js';
+import { cachedSource, TraderEngine, type Sources } from './engine.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
 import { loadKeypair } from './wallet.js';
@@ -52,10 +52,13 @@ interface Ctx {
 }
 
 function buildSources(cfg: TraderConfig): Sources {
+  // As fontes de DESCOBERTA são cacheadas (rate limit do GeckoTerminal);
+  // enriquecimento e preço do SOL continuam frescos a cada tick.
+  const ttlMs = cfg.discovery.sourceTtlSec * 1000;
   return {
-    trending: fetchTrendingPools,
-    newPools: fetchNewPools,
-    boosts: fetchTopBoosts,
+    trending: cachedSource(fetchTrendingPools, ttlMs),
+    newPools: cachedSource(fetchNewPools, ttlMs),
+    boosts: cachedSource(fetchTopBoosts, ttlMs),
     pairs: (mints) => fetchPairsForMints(mints),
     rugcheck: (mint) => fetchRugcheck(mint, cfg.risk.rugcheckTimeoutMs),
     solPriceUsd: fetchSolPriceUsd,

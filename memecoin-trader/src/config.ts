@@ -26,6 +26,14 @@ const discoverySchema = z.object({
   geckoTrending: z.boolean(),
   geckoNew: z.boolean(),
   dexscreenerBoosts: z.boolean(),
+  /**
+   * Idade máxima do cache das fontes de DESCOBERTA, em segundos (0 = sem cache).
+   * Com tick curto, consultar trending a cada tick estoura o rate limit do
+   * GeckoTerminal (30 req/min) — e trending não muda a cada 15s de qualquer
+   * jeito. O enriquecimento (preço/volume via DexScreener) continua fresco por
+   * tick; só a LISTA de candidatos é cacheada.
+   */
+  sourceTtlSec: z.number().int().min(0),
   maxCandidatesPerTick: z.number().int().min(1).max(60),
   excludeMints: z.array(z.string()),
 });

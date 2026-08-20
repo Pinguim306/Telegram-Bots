@@ -62,6 +62,34 @@ export interface Sources {
   solPriceUsd(): Promise<number | null>;
 }
 
+/**
+ * Cacheia uma fonte de descoberta por `ttlMs`. Existe porque com tick curto
+ * (15s) consultar o GeckoTerminal a cada tick estoura o rate limit gratuito e
+ * a descoberta morre inteira em 429 — trending não muda a cada 15s mesmo.
+ * Se a fonte falhar, serve o resultado anterior por até 5×TTL antes de
+ * propagar o erro: candidato de 1 minuto atrás é melhor que nenhum.
+ */
+export function cachedSource<T>(
+  fn: () => Promise<T[]>,
+  ttlMs: number,
+  now: () => number = () => Date.now(),
+): () => Promise<T[]> {
+  let last: T[] | null = null;
+  let lastAt = 0;
+  return async () => {
+    if (ttlMs > 0 && last !== null && now() - lastAt < ttlMs) return last;
+    try {
+      const fresh = await fn();
+      last = fresh;
+      lastAt = now();
+      return fresh;
+    } catch (err) {
+      if (ttlMs > 0 && last !== null && now() - lastAt < ttlMs * 5) return last;
+      throw err;
+    }
+  };
+}
+
 export interface TokenAnalysis {
   onchain: OnchainTokenInfo | null;
   holders: HolderStats | null;
