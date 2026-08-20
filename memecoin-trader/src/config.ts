@@ -102,7 +102,10 @@ const entrySchema = z.object({
     minAgeMin: z.number().min(0),
     /** 0 = sem teto. */
     maxAgeHours: z.number().min(0),
+    /** Piso ABSOLUTO de transações 1h — corte de poeira; o filtro real é o ritmo. */
     minTxns1h: z.number().int().min(0),
+    /** Ritmo mínimo de transações por minuto de vida (teto 60). 0 = desligado. */
+    minTxnsPerMin: z.number().min(0),
     minBuyRatio1h: z.number().min(0).max(1),
     /** Piso de market cap (0 = sem piso). Na curve, é a defesa contra recém-mintado. */
     minMarketCapUsd: z.number().min(0),

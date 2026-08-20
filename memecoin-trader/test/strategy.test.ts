@@ -118,7 +118,9 @@ describe('evaluateEntry — gates', () => {
   });
 
   it('reprova pressão vendedora', () => {
-    const result = evaluateEntry(pumpingSnap({ buys1h: 40, sells1h: 120 }), [], cfg.entry);
+    // 350 txns em 300min mantém o ritmo acima do gate (5,8/min) para o teste
+    // morrer onde deve: na proporção de compras.
+    const result = evaluateEntry(pumpingSnap({ buys1h: 100, sells1h: 250 }), [], cfg.entry);
     expect(result.eligible).toBe(false);
     expect(result.rejection).toContain('buy ratio');
   });
@@ -293,5 +295,26 @@ describe('evaluateExit', () => {
     );
     if (decision.action === 'sell') expect(decision.reason).toContain('liquidez');
     else expect.fail('deveria vender');
+  });
+});
+
+describe('gate de ritmo de transações', () => {
+  it('jovem com poucas txns absolutas passa; velho com as mesmas txns morre no ritmo', () => {
+    // 10min de vida, 60 txns = 6/min: acima do piso (30) e do ritmo (5/min).
+    const jovem = evaluateEntry(
+      pumpingSnap({ ageMin: 10, buys1h: 40, sells1h: 20, vol1hUsd: 8_000, vol24hUsd: 8_000 }),
+      ['pp-migration'],
+      cfg.entry,
+    );
+    expect(jovem.eligible).toBe(true);
+
+    // Mesmas 60 txns em 60min = 1/min: morto, e o motivo é o ritmo de txns.
+    const velho = evaluateEntry(
+      pumpingSnap({ ageMin: 60, buys1h: 40, sells1h: 20, vol1hUsd: 31_000, vol24hUsd: 31_000 }),
+      [],
+      cfg.entry,
+    );
+    expect(velho.eligible).toBe(false);
+    expect(velho.rejection).toContain('txns');
   });
 });
