@@ -16,6 +16,7 @@ import {
   listClosedPositions,
   listOpenPositions,
   openTraderDb,
+  setEntryMarkPrice,
   setTokenCooldown,
   updateTickState,
   upsertTokenLog,
@@ -154,6 +155,19 @@ describe('posições', () => {
     expect(second.position.exitReason).toBe('take profit');
   });
 
+  it('baseline executável: só a PRIMEIRA marca conta', () => {
+    const pos = openPosition();
+    expect(pos.entryMarkPriceUsd).toBeNull();
+
+    setEntryMarkPrice(db, pos.id, 0.0037);
+    expect(getOpenPositionByMint(db, 'paper', 'MintA')!.entryMarkPriceUsd).toBeCloseTo(0.0037);
+
+    // Uma segunda marca NÃO move o baseline — senão o stop loss viraria um
+    // alvo móvel que persegue o preço para baixo e nunca dispara.
+    setEntryMarkPrice(db, pos.id, 0.002);
+    expect(getOpenPositionByMint(db, 'paper', 'MintA')!.entryMarkPriceUsd).toBeCloseTo(0.0037);
+  });
+
   it('atualiza estado de tick (pico, último preço, stale)', () => {
     const pos = openPosition();
     updateTickState(db, pos.id, 0.009, 0.0085, 0);
@@ -255,6 +269,9 @@ describe('migração de banco antigo', () => {
       fill: { tokensQty: 100, solSpent: 0.1, usdSpent: 10, priceUsd: 0.1, txSig: null },
     });
     expect(pos.entryMcapUsd).toBe(22_000);
+    // Posição de banco antigo nasce sem baseline executável — e aceita um.
+    expect(pos.entryMarkPriceUsd).toBeNull();
+    setEntryMarkPrice(migrated, pos.id, 0.09);
     migrated.close();
     rmSync(oldDir, { recursive: true, force: true });
   });

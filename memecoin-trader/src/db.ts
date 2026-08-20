@@ -117,6 +117,10 @@ function migrate(db: Db): void {
 
   ensureColumn(db, 'positions', 'entry_mcap_usd', 'REAL');
   ensureColumn(db, 'positions', 'exit_mcap_usd', 'REAL');
+  // Preço por token da PRIMEIRA marca executável após a compra (quote real de
+  // venda). É o baseline das regras de saída: absorve o custo de entrada
+  // (impacto + taxas) que faria todo trade nascer "dentro do stop loss".
+  ensureColumn(db, 'positions', 'entry_mark_price_usd', 'REAL');
   ensureColumn(db, 'orders', 'mcap_usd', 'REAL');
   ensureColumn(db, 'orders', 'venue', 'TEXT');
 }
@@ -151,6 +155,13 @@ export interface Position {
   status: 'open' | 'closed';
   entryTs: number;
   entryPriceUsd: number;
+  /**
+   * Preço por token da PRIMEIRA marca executável após a compra (quote real de
+   * venda no agregador), ou null enquanto não houver marca. Quando existe, é o
+   * baseline das regras de saída no lugar de entryPriceUsd: absorve o custo de
+   * entrada (impacto de preço + taxas) que faria todo trade nascer no stop.
+   */
+  entryMarkPriceUsd: number | null;
   entryLiquidityUsd: number;
   /** Market cap na COMPRA (o "tamanho" do token quando entramos), ou null. */
   entryMcapUsd: number | null;
@@ -187,6 +198,7 @@ interface PositionRow {
   status: string;
   entry_ts: number;
   entry_price_usd: number;
+  entry_mark_price_usd: number | null;
   entry_liquidity_usd: number;
   entry_mcap_usd: number | null;
   exit_mcap_usd: number | null;
@@ -221,6 +233,7 @@ function mapPosition(row: PositionRow): Position {
     status: row.status as 'open' | 'closed',
     entryTs: row.entry_ts,
     entryPriceUsd: row.entry_price_usd,
+    entryMarkPriceUsd: row.entry_mark_price_usd,
     entryLiquidityUsd: row.entry_liquidity_usd,
     entryMcapUsd: row.entry_mcap_usd,
     exitMcapUsd: row.exit_mcap_usd,
@@ -333,6 +346,13 @@ export function updateTickState(
 
 export function markTookProfit(db: Db, id: number): void {
   db.prepare('UPDATE positions SET took_profit = 1 WHERE id = ?').run(id);
+}
+
+/** Grava o baseline executável — só a primeira marca conta, as demais são ignoradas. */
+export function setEntryMarkPrice(db: Db, id: number, priceUsd: number): void {
+  db.prepare(
+    'UPDATE positions SET entry_mark_price_usd = ? WHERE id = ? AND entry_mark_price_usd IS NULL',
+  ).run(priceUsd, id);
 }
 
 /**

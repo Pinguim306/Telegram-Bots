@@ -98,16 +98,32 @@ async function cmdRun(): Promise<void> {
   const ctx = await buildCtx();
   printModeBanner(ctx);
   ctx.pumpportal?.start();
-  process.on('SIGINT', () => {
-    logger.info('SIGINT — encerrando após o tick atual');
-    ctx.pumpportal?.stop();
-    ctx.engine.stop();
-  });
-  process.on('SIGTERM', () => {
-    ctx.pumpportal?.stop();
-    ctx.engine.stop();
-  });
+
+  // 1º Ctrl+C: gracioso (termina o tick em andamento e sai).
+  // 2º Ctrl+C: forçado — um tick preso numa espera de rede longa (confirmação
+  // de tx, retry de RPC) seguraria o gracioso por minutos; ninguém deve
+  // precisar de pkill para desligar o próprio bot.
+  let interrupts = 0;
+  const shutdown = (signal: string) => {
+    interrupts++;
+    if (interrupts === 1) {
+      logger.info(`${signal} — encerrando após o tick atual (Ctrl+C de novo força a saída)`);
+      ctx.pumpportal?.stop();
+      ctx.engine.stop();
+    } else {
+      logger.warn(
+        'Saída FORÇADA. Posições seguem salvas no banco; ordem em voo (se houver) é reconciliada pelo saldo real no próximo boot.',
+      );
+      process.exit(130);
+    }
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
   await ctx.engine.runLoop();
+  // Saída explícita: websocket/timers residuais não podem segurar o processo
+  // depois que o loop terminou.
+  process.exit(0);
 }
 
 async function cmdTick(): Promise<void> {

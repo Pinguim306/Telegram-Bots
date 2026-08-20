@@ -56,6 +56,11 @@ export class PaperBroker implements Broker {
     kvSet(this.db, PAPER_BALANCE_KEY, String(this.sizing.paperStartBalanceSol));
   }
 
+  /** Paper não consulta agregador — decide pelo preço de tela, como sempre. */
+  async markValueSol(_mint: string, _tokensQty: number): Promise<number | null> {
+    return null;
+  }
+
   async buy(
     _mint: string,
     solAmount: number,
@@ -134,6 +139,24 @@ export class LiveBroker implements Broker {
     if (!info) throw new Error(`Não consegui ler decimals do mint ${mint}`);
     this.decimalsCache.set(mint, info.decimals);
     return info.decimals;
+  }
+
+  /**
+   * Marca a posição pelo que uma venda REAL pagaria agora (quote de venda no
+   * Jupiter). Qualquer falha vira null — o engine cai para o preço de
+   * indexador; a marca nunca pode derrubar o tick.
+   */
+  async markValueSol(mint: string, tokensQty: number): Promise<number | null> {
+    try {
+      const decimals = await this.mintDecimals(mint);
+      const raw = BigInt(Math.floor(tokensQty * 10 ** decimals));
+      if (raw <= 0n) return null;
+      const quote = await this.jupiter.quote(mint, WSOL_MINT, raw, this.exec.slippageBps);
+      const sol = Number(quote.outAmount) / LAMPORTS_PER_SOL;
+      return Number.isFinite(sol) && sol > 0 ? sol : null;
+    } catch {
+      return null;
+    }
   }
 
   async buy(
