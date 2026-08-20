@@ -62,6 +62,28 @@ describe('normalizePair', () => {
     expect(snap.change5mPct).toBe(0);
   });
 
+  it('liquidez ausente fica null — zero dispararia venda urgente por falso dreno', () => {
+    const snap = normalizePair(rawPair({ liquidity: undefined }), NOW_MS)!;
+    expect(snap.liquidityUsd).toBeNull();
+  });
+
+  it('símbolo/nome hostis são sanitizados na ingestão (escapes ANSI, controle)', () => {
+    const snap = normalizePair(
+      rawPair({
+        baseToken: {
+          address: 'MintA11111111111111111111111111111111111111',
+          symbol: 'OK\u001b[8A\u001b[0J',
+          name: 'Fake\u001b[2K APPROVED \u202e reversed'.padEnd(300, 'x'),
+        },
+      }),
+      NOW_MS,
+    )!;
+    expect(snap.symbol).toBe('OK[8A[0J');
+    expect(snap.name).not.toContain('\u001b');
+    expect(snap.name).not.toContain('\u202e');
+    expect(snap.name.length).toBeLessThanOrEqual(32);
+  });
+
   it('sobrevive a lixo na entrada', () => {
     expect(normalizePair(null, NOW_MS)).toBeNull();
     expect(normalizePair('string', NOW_MS)).toBeNull();

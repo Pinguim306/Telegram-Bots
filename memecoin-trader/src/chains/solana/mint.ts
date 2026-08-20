@@ -64,7 +64,12 @@ export function rawToUi(raw: bigint, decimals: number): number {
 // mint carrega: metadata é inofensivo; permanent delegate confisca token do
 // holder; transfer hook roda código arbitrário no transfer (honeypot clássico).
 
-/** Nomes por tipo (enum ExtensionType do spl-token-2022). */
+/**
+ * Nomes por tipo (enum ExtensionType do spl-token-2022, conferido contra o
+ * fonte oficial em solana-program/token-2022 interface/src/extension/mod.rs —
+ * a numeração do fim do enum já foi errada aqui uma vez: 24 é
+ * ConfidentialMintBurn, 25 é ScaledUiAmount e Pausable é o 26).
+ */
 const EXTENSION_NAMES: Record<number, string> = {
   1: 'transferFeeConfig',
   3: 'mintCloseAuthority',
@@ -81,8 +86,10 @@ const EXTENSION_NAMES: Record<number, string> = {
   21: 'tokenGroup',
   22: 'groupMemberPointer',
   23: 'tokenGroupMember',
-  24: 'scaledUiAmount',
-  25: 'pausable',
+  24: 'confidentialMintBurn',
+  25: 'scaledUiAmount',
+  26: 'pausable',
+  27: 'pausableAccount',
 };
 
 /**
@@ -94,10 +101,10 @@ const EXTENSION_NAMES: Record<number, string> = {
  *   - transferHook: código arbitrário decide se o transfer passa
  *   - pausable: o emissor pausa todas as transferências
  */
-const DANGEROUS_EXTENSIONS = new Set([6, 9, 12, 14, 25]);
+const DANGEROUS_EXTENSIONS = new Set([6, 9, 12, 14, 26]);
 
 /** Extensões que mexem no que você recebe, sem chegar a bloquear a venda. */
-const TAXING_EXTENSIONS = new Set([1, 10, 24]);
+const TAXING_EXTENSIONS = new Set([1, 10, 25]);
 
 export interface MintExtensions {
   all: string[];

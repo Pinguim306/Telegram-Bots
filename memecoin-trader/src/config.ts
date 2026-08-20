@@ -112,6 +112,12 @@ const exitSchema = z.object({
 
 const executionSchema = z.object({
   slippageBps: z.number().int().min(10).max(5000),
+  /**
+   * Slippage das saídas URGENTES (rug/stop/sem dados). Num pool sendo drenado,
+   * a slippage normal faz toda venda reverter e o bot fica preso dentro do
+   * token — aceitar um preço pior é o que tira o dinheiro de lá.
+   */
+  emergencySlippageBps: z.number().int().min(10).max(10000),
   maxPriorityFeeLamports: z.number().int().min(0),
   confirmTimeoutSec: z.number().int().min(10),
   paperSlippagePct: z.number().min(0).max(50),

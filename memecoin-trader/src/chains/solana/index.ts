@@ -18,6 +18,21 @@ import {
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /**
+ * O destino da transação NÃO pôde ser determinado: ela foi transmitida, mas o
+ * RPC não respondeu se confirmou nem se expirou. Quem captura este erro sabe
+ * que pode haver tokens/SOL em trânsito e deve reconciliar pelo saldo real.
+ */
+export class UnknownTxOutcomeError extends Error {
+  constructor(readonly signature: string, detail: string) {
+    super(
+      `Destino da transação ${signature} DESCONHECIDO (${detail}). ` +
+        'Ela pode ter executado — confira o saldo/explorer antes de repetir a ordem.',
+    );
+    this.name = 'UnknownTxOutcomeError';
+  }
+}
+
+/**
  * Adapter da Solana: leitura de segurança on-chain + envio de transação.
  *
  * A keypair é opcional de propósito — o modo paper roda a análise de risco
@@ -39,9 +54,16 @@ export class SolanaChain implements ChainAdapter {
    */
   static async connect(rpcUrls: string[], keypair: Keypair | null, log: Logger): Promise<SolanaChain> {
     let lastErr: Error | null = null;
+    // Toda requisição HTTP do web3.js ganha um teto: sem isso, um RPC que
+    // aceita a conexão e trava pendura o tick por minutos — com o stop loss
+    // parado enquanto a memecoin despenca. 10s por requisição; o polling de
+    // confirmação faz várias requisições curtas, então isso não conflita com
+    // o confirmTimeoutSec.
+    const rpcFetch = ((input: any, init?: any) =>
+      fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) })) as typeof fetch;
     for (const url of rpcUrls) {
       try {
-        const conn = new Connection(url, { commitment: 'confirmed' });
+        const conn = new Connection(url, { commitment: 'confirmed', fetch: rpcFetch });
         await withTimeout(conn.getLatestBlockhash(), 6_000, `RPC ${url} não respondeu`);
         log.info({ rpc: url }, 'RPC da Solana conectado');
         return new SolanaChain(conn, keypair, log);
@@ -68,6 +90,13 @@ export class SolanaChain implements ChainAdapter {
     if (!this.keypair) return 0;
     const lamports = await this.conn.getBalance(this.keypair.publicKey);
     return lamports / LAMPORTS_PER_SOL;
+  }
+
+  /** Saldo do token em unidades de UI. 0 sem carteira (modo paper). */
+  async tokenBalanceUi(mint: string): Promise<number> {
+    if (!this.keypair) return 0;
+    const { raw, decimals } = await this.tokenBalanceRaw(mint);
+    return rawToUi(raw, decimals);
   }
 
   /** Saldo total de um token na carteira (somando todas as token accounts). */
@@ -155,9 +184,13 @@ export class SolanaChain implements ChainAdapter {
   /**
    * Assina, envia e confirma uma transação do Jupiter.
    *
-   * A confirmação usa o blockhash da própria transação; se ela expirar sem
-   * confirmar, o status é consultado uma última vez antes de desistir — "expirou"
-   * e "falhou" são coisas diferentes de "não sei", e quem chama precisa saber qual foi.
+   * O envio é irrevogável: depois do sendRawTransaction a tx segue válida até
+   * lastValidBlockHeight, MESMO que o await de confirmação estoure o timeout.
+   * Tratar "timeout" como "não executou" faria o chamador repetir uma ordem
+   * que já aconteceu (compra órfã sem stop loss, ou venda dupla). Por isso um
+   * timeout aqui nunca vira erro genérico — o destino é resolvido de verdade:
+   * confirmada (retorna), falhada, expirada (seguro repetir) ou, no pior caso,
+   * UnknownTxOutcomeError, que manda o chamador reconciliar pelo saldo real.
    */
   async signSendAndConfirm(
     txBase64: string,
@@ -192,14 +225,51 @@ export class SolanaChain implements ChainAdapter {
       }
       return signature;
     } catch (err) {
-      // Última chance: a tx pode ter confirmado e o await é que se perdeu.
-      const status = await this.conn.getSignatureStatuses([signature]).catch(() => null);
-      const st = status?.value?.[0];
-      if (st && !st.err && (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized')) {
+      if (err instanceof Error && err.message.includes('falhou on-chain')) throw err;
+      return this.resolveOutcome(signature, lvbh);
+    }
+  }
+
+  /**
+   * Resolve o destino de uma tx já transmitida cujo confirm falhou/estourou.
+   * Só sai daqui com uma resposta VERDADEIRA: confirmada, falhada on-chain,
+   * expirada sem executar (blockhash vencido = nunca mais entra) — ou, se o
+   * RPC não colaborar em 120s, UnknownTxOutcomeError, nunca um falso "falhou".
+   */
+  private async resolveOutcome(signature: string, lastValidBlockHeight: number): Promise<string> {
+    const deadline = Date.now() + 120_000;
+    let expiredSince: number | null = null;
+
+    while (Date.now() < deadline) {
+      let status: { err: unknown; confirmationStatus?: string | null } | null = null;
+      let height: number | null = null;
+      try {
+        status = (await this.conn.getSignatureStatuses([signature])).value[0] ?? null;
+        height = await this.conn.getBlockHeight('confirmed');
+      } catch {
+        // RPC piscou durante o poll — tenta de novo até o deadline.
+      }
+
+      if (status?.err) {
+        throw new Error(`Transação ${signature} falhou on-chain: ${JSON.stringify(status.err)}`);
+      }
+      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+        this.log.info({ signature }, 'Transação confirmou depois do timeout inicial');
         return signature;
       }
-      throw err;
+      if (height !== null && height > lastValidBlockHeight && status === null) {
+        // Blockhash vencido e nenhum sinal da tx. Margem de 10s porque o status
+        // de uma inclusão no último bloco válido pode demorar a aparecer.
+        if (expiredSince === null) expiredSince = Date.now();
+        else if (Date.now() - expiredSince > 10_000) {
+          throw new Error(
+            `Transação ${signature} expirou sem executar (blockhash vencido) — seguro repetir a ordem`,
+          );
+        }
+      }
+      await new Promise((r) => setTimeout(r, 2_000));
     }
+    throw new UnknownTxOutcomeError(signature, 'sem resposta definitiva do RPC em 120s');
   }
 }
 

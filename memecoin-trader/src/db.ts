@@ -307,9 +307,15 @@ export function markTookProfit(db: Db, id: number): void {
 /**
  * Aplica uma venda (parcial ou total) e fecha a posição quando ela zera.
  *
- * "Zerou" tem tolerância de poeira: vender 100% via arredondamento de float pode
- * deixar 1e-9 tokens na conta; exigir zero exato deixaria a posição aberta para
- * sempre com quantidade invendável.
+ * Fecha por `fill.soldAll` (a venda liquidou tudo que existia de vendível —
+ * a contabilidade local pode divergir do fill real por slippage/taxa e não
+ * pode segurar a posição aberta) ou por poeira de arredondamento de float.
+ *
+ * Os UPDATEs exigem status='open': dois processos (o `run` e um `sell` manual)
+ * podem decidir vender a mesma posição com objetos obsoletos — o segundo
+ * fechamento não pode sobrescrever o primeiro nem contar PnL duas vezes.
+ * `applied: false` = a posição já não estava aberta; quem chamou não deve
+ * contabilizar nada.
  */
 export function applySellFill(
   db: Db,
@@ -317,30 +323,38 @@ export function applySellFill(
   fill: SellFill,
   reason: string,
   nowTs: number,
-): { position: Position; closed: boolean } {
+): { position: Position; closed: boolean; applied: boolean } {
   const remaining = Math.max(0, position.tokensQty - fill.tokensSold);
   const dustThreshold = position.tokensBought * 1e-6;
-  const closed = remaining <= dustThreshold;
+  const closed = fill.soldAll || remaining <= dustThreshold;
 
   const solReceived = position.solReceived + fill.solReceived;
   const usdReceived = position.usdReceived + fill.usdReceived;
 
+  let changes: number;
   if (closed) {
     const pnlSol = solReceived - position.solSpent;
     const pnlUsd = usdReceived - position.usdSpent;
     const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;
-    db.prepare(
-      `UPDATE positions SET tokens_qty = 0, sol_received = ?, usd_received = ?, status = 'closed',
-         exit_ts = ?, exit_price_usd = ?, exit_reason = ?, pnl_sol = ?, pnl_usd = ?, pnl_pct = ?
-       WHERE id = ?`,
-    ).run(solReceived, usdReceived, nowTs, fill.priceUsd, reason, pnlSol, pnlUsd, pnlPct, position.id);
+    changes = db
+      .prepare(
+        `UPDATE positions SET tokens_qty = 0, sol_received = ?, usd_received = ?, status = 'closed',
+           exit_ts = ?, exit_price_usd = ?, exit_reason = ?, pnl_sol = ?, pnl_usd = ?, pnl_pct = ?
+         WHERE id = ? AND status = 'open'`,
+      )
+      .run(solReceived, usdReceived, nowTs, fill.priceUsd, reason, pnlSol, pnlUsd, pnlPct, position.id)
+      .changes;
   } else {
-    db.prepare(
-      'UPDATE positions SET tokens_qty = ?, sol_received = ?, usd_received = ? WHERE id = ?',
-    ).run(remaining, solReceived, usdReceived, position.id);
+    changes = db
+      .prepare(
+        `UPDATE positions SET tokens_qty = ?, sol_received = ?, usd_received = ?
+         WHERE id = ? AND status = 'open'`,
+      )
+      .run(remaining, solReceived, usdReceived, position.id).changes;
   }
 
-  return { position: getPosition(db, position.id)!, closed };
+  const applied = changes > 0;
+  return { position: getPosition(db, position.id)!, closed: closed && applied, applied };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -404,6 +418,26 @@ export function upsertTokenLog(
                                      flags_json = excluded.flags_json,
                                      cooldown_until = excluded.cooldown_until`,
   ).run(mint, symbol, nowTs, nowTs, riskScore, verdict, flagsJson, cooldownUntil);
+}
+
+/**
+ * Re-arma só o cooldown de um token, sem sobrescrever a última avaliação.
+ * Chamado ao FECHAR uma posição: o cooldown gravado na entrada expira durante
+ * o hold, e sem este re-arme uma saída por tempo máximo/trailing seria seguida
+ * de recompra do mesmo token no MESMO tick (o token continua trending).
+ */
+export function setTokenCooldown(
+  db: Db,
+  mint: string,
+  symbol: string,
+  cooldownUntil: number,
+  nowTs: number,
+): void {
+  db.prepare(
+    `INSERT INTO token_log (mint, symbol, first_seen_ts, last_eval_ts, cooldown_until)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(mint) DO UPDATE SET cooldown_until = MAX(cooldown_until, excluded.cooldown_until)`,
+  ).run(mint, symbol, nowTs, nowTs, cooldownUntil);
 }
 
 export function isOnCooldown(db: Db, mint: string, nowTs: number): boolean {

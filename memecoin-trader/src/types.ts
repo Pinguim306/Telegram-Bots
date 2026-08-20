@@ -23,7 +23,12 @@ export interface PairSnapshot {
   priceUsd: number;
   /** Preço no token de cotação do par (SOL na maioria dos pares de memecoin). */
   priceNative: number | null;
-  liquidityUsd: number;
+  /**
+   * null = o indexador não informou. null NÃO é zero: tratar liquidez
+   * desconhecida como 0 dispararia a venda de emergência por "dreno de
+   * liquidez" em cima de uma resposta parcial da API.
+   */
+  liquidityUsd: number | null;
   fdvUsd: number | null;
   marketCapUsd: number | null;
   vol5mUsd: number;
@@ -120,6 +125,13 @@ export interface SellFill {
   usdReceived: number;
   priceUsd: number;
   txSig: string | null;
+  /**
+   * true = esta venda liquidou TUDO que havia de vendível (100% pedido, ou o
+   * saldo real on-chain foi esvaziado). É o que fecha a posição — a
+   * contabilidade local pode divergir do fill real (slippage, taxa de
+   * transferência) e "remaining > 0" local não pode segurar a posição aberta.
+   */
+  soldAll: boolean;
 }
 
 /**
@@ -135,6 +147,8 @@ export interface Broker {
   /**
    * Vende `portionPct`% da posição. `tokensQty` é a quantidade que o BOT acha
    * que tem; o live broker confere o saldo real on-chain e vende o menor dos dois.
+   * `urgent` = saída de emergência (rug/stop): o live usa a slippage de
+   * emergência para não ficar preso revertendo enquanto o pool esvazia.
    */
   sell(
     mint: string,
@@ -142,6 +156,7 @@ export interface Broker {
     portionPct: number,
     snap: PairSnapshot,
     solPriceUsd: number,
+    urgent?: boolean,
   ): Promise<SellFill>;
 }
 
@@ -153,6 +168,8 @@ export interface ChainAdapter {
   readonly key: ChainKey;
   walletAddress(): string | null;
   nativeBalanceSol(): Promise<number>;
+  /** Saldo do token na carteira, em unidades de UI. 0 quando não há carteira. */
+  tokenBalanceUi(mint: string): Promise<number>;
   getOnchainTokenInfo(mint: string): Promise<OnchainTokenInfo | null>;
   getTopHolders(mint: string, info: OnchainTokenInfo): Promise<HolderStats | null>;
 }

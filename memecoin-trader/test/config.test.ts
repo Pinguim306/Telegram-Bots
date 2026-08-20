@@ -35,6 +35,10 @@ describe('config/trader.json', () => {
     expect(cfg.exit.takeProfitPct).toBeGreaterThan(cfg.exit.trailingStopPct);
   });
 
+  it('slippage de emergência é mais larga que a normal — é a razão de ela existir', () => {
+    expect(cfg.execution.emergencySlippageBps).toBeGreaterThan(cfg.execution.slippageBps);
+  });
+
   it('WSOL e stablecoins estão fora da lista de compra', () => {
     expect(cfg.discovery.excludeMints).toContain('So11111111111111111111111111111111111111112');
     expect(cfg.discovery.excludeMints).toContain('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');

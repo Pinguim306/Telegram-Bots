@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ageMin, pct, price, sol, table, usd } from '../src/format.js';
+import { ageMin, cleanLabel, pct, price, sol, table, usd } from '../src/format.js';
 
 describe('format', () => {
   it('usd abrevia', () => {
@@ -28,6 +28,15 @@ describe('format', () => {
     expect(ageMin(53)).toBe('53m');
     expect(ageMin(90)).toBe('1h 30m');
     expect(ageMin(null)).toBe('?');
+  });
+
+  it('cleanLabel remove controle/ANSI/bidi e limita tamanho', () => {
+    expect(cleanLabel('BONK')).toBe('BONK');
+    expect(cleanLabel('OK\u001b[8A\u001b[0Jfim')).toBe('OK[8A[0Jfim');
+    expect(cleanLabel('a\u202eb\u200bc')).toBe('abc');
+    expect(cleanLabel('x'.repeat(100), 12)).toHaveLength(12);
+    expect(cleanLabel('\u0000\u0007')).toBe('?');
+    expect(cleanLabel('  espaços  ')).toBe('espaços');
   });
 
   it('table alinha colunas', () => {
