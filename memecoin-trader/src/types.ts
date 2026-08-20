@@ -116,6 +116,8 @@ export interface BuyFill {
   usdSpent: number;
   priceUsd: number;
   txSig: string | null;
+  /** Onde executou: 'jupiter' | 'pumpportal' | 'paper'. */
+  venue?: string;
 }
 
 /** Resultado de uma venda (parcial ou total). */
@@ -132,6 +134,8 @@ export interface SellFill {
    * transferência) e "remaining > 0" local não pode segurar a posição aberta.
    */
   soldAll: boolean;
+  /** Onde executou: 'jupiter' | 'pumpportal' | 'paper'. */
+  venue?: string;
 }
 
 /**

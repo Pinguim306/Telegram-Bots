@@ -153,6 +153,11 @@ const executionSchema = z.object({
    * token — aceitar um preço pior é o que tira o dinheiro de lá.
    */
   emergencySlippageBps: z.number().int().min(10).max(10000),
+  /**
+   * Quando o Jupiter responde NO_ROUTES_FOUND (token novo demais para o índice
+   * dele), executa direto no pump.fun via PumpPortal trade-local (taxa 0,5%).
+   */
+  pumpportalFallback: z.boolean(),
   maxPriorityFeeLamports: z.number().int().min(0),
   confirmTimeoutSec: z.number().int().min(10),
   paperSlippagePct: z.number().min(0).max(50),

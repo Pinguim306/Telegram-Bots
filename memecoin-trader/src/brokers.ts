@@ -3,6 +3,7 @@ import { kvGet, kvSet, type Db } from './db.js';
 import { JupiterClient } from './chains/solana/jupiter.js';
 import { LAMPORTS_PER_SOL, SolanaChain } from './chains/solana/index.js';
 import { rawToUi } from './chains/solana/mint.js';
+import { fetchTradeLocalTx, isNoRouteError } from './chains/solana/pumpportal-trade.js';
 import { WSOL_MINT } from './datasources/dexscreener.js';
 import type { Logger } from './log.js';
 import type { Broker, BuyFill, PairSnapshot, SellFill } from './types.js';
@@ -72,7 +73,7 @@ export class PaperBroker implements Broker {
     const tokensQty = usdSpent / effPrice;
 
     kvSet(this.db, PAPER_BALANCE_KEY, String(balance - solAmount));
-    return { tokensQty, solSpent: solAmount, usdSpent, priceUsd: effPrice, txSig: null };
+    return { tokensQty, solSpent: solAmount, usdSpent, priceUsd: effPrice, txSig: null, venue: 'paper' };
   }
 
   async sell(
@@ -93,7 +94,15 @@ export class PaperBroker implements Broker {
 
     const balance = await this.balanceSol();
     kvSet(this.db, PAPER_BALANCE_KEY, String(balance + solReceived));
-    return { tokensSold, solReceived, usdReceived, priceUsd: effPrice, txSig: null, soldAll: pct >= 100 };
+    return {
+      tokensSold,
+      solReceived,
+      usdReceived,
+      priceUsd: effPrice,
+      txSig: null,
+      soldAll: pct >= 100,
+      venue: 'paper',
+    };
   }
 }
 
@@ -137,7 +146,18 @@ export class LiveBroker implements Broker {
     if (lamports <= 0n) throw new Error('Valor de compra zerado');
 
     const decimals = await this.mintDecimals(mint);
-    const quote = await this.jupiter.quote(WSOL_MINT, mint, lamports, this.exec.slippageBps);
+    let quote;
+    try {
+      quote = await this.jupiter.quote(WSOL_MINT, mint, lamports, this.exec.slippageBps);
+    } catch (err) {
+      // Token recém-criado/graduado ainda fora do índice de rotas do Jupiter —
+      // a janela exata do scalp. Executa direto no pump.fun via PumpPortal.
+      if (this.exec.pumpportalFallback && isNoRouteError(err)) {
+        this.log.warn({ mint }, 'Jupiter sem rota — comprando via pump.fun (PumpPortal)');
+        return this.buyViaPumpPortal(mint, solAmount, solPriceUsd);
+      }
+      throw err;
+    }
     if (quote.priceImpactPct !== null && quote.priceImpactPct > 10) {
       throw new Error(
         `Impacto de preço de ${quote.priceImpactPct.toFixed(1)}% na compra — pool raso demais para esta ordem`,
@@ -166,7 +186,85 @@ export class LiveBroker implements Broker {
     const priceUsd = tokensQty > 0 ? usdSpent / tokensQty : snap.priceUsd;
 
     this.log.info({ mint, txSig, solSpent, tokensQty }, 'Compra live confirmada');
-    return { tokensQty, solSpent, usdSpent, priceUsd, txSig };
+    return { tokensQty, solSpent, usdSpent, priceUsd, txSig, venue: 'jupiter' };
+  }
+
+  /**
+   * Compra via PumpPortal trade-local. O fill é medido pelo DELTA DE SALDO
+   * real da carteira — mais honesto que qualquer quote.
+   */
+  private async buyViaPumpPortal(
+    mint: string,
+    solAmount: number,
+    solPriceUsd: number,
+  ): Promise<BuyFill> {
+    const wallet = this.chain.walletAddress();
+    if (!wallet) throw new Error('Modo live sem carteira carregada');
+
+    const tokensBefore = await this.chain.tokenBalanceUi(mint);
+    const txBytes = await fetchTradeLocalTx({
+      publicKey: wallet,
+      action: 'buy',
+      mint,
+      amount: solAmount,
+      denominatedInSol: true,
+      slippagePct: this.exec.slippageBps / 100,
+      priorityFeeSol: this.exec.maxPriorityFeeLamports / LAMPORTS_PER_SOL,
+    });
+    const txSig = await this.chain.signSendAndConfirm(
+      Buffer.from(txBytes).toString('base64'),
+      null,
+      this.exec.confirmTimeoutSec,
+    );
+
+    const tokensQty = (await this.chain.tokenBalanceUi(mint)) - tokensBefore;
+    if (tokensQty <= 0) {
+      throw new Error(`Compra via pump.fun confirmou mas nenhum token chegou — confira ${txSig}`);
+    }
+    const usdSpent = solAmount * solPriceUsd;
+    this.log.info({ mint, txSig, solSpent: solAmount, tokensQty }, 'Compra via pump.fun confirmada');
+    return {
+      tokensQty,
+      solSpent: solAmount,
+      usdSpent,
+      priceUsd: usdSpent / tokensQty,
+      txSig,
+      venue: 'pumpportal',
+    };
+  }
+
+  /** Venda via PumpPortal trade-local, com SOL recebido medido pelo delta de saldo. */
+  private async sellViaPumpPortal(
+    mint: string,
+    tokensSold: number,
+    soldAll: boolean,
+    snap: PairSnapshot,
+    solPriceUsd: number,
+  ): Promise<SellFill> {
+    const wallet = this.chain.walletAddress();
+    if (!wallet) throw new Error('Modo live sem carteira carregada');
+
+    const solBefore = await this.chain.nativeBalanceSol();
+    const txBytes = await fetchTradeLocalTx({
+      publicKey: wallet,
+      action: 'sell',
+      mint,
+      amount: tokensSold,
+      denominatedInSol: false,
+      slippagePct: this.exec.emergencySlippageBps / 100,
+      priorityFeeSol: this.exec.maxPriorityFeeLamports / LAMPORTS_PER_SOL,
+    });
+    const txSig = await this.chain.signSendAndConfirm(
+      Buffer.from(txBytes).toString('base64'),
+      null,
+      this.exec.confirmTimeoutSec,
+    );
+
+    const solReceived = Math.max(0, (await this.chain.nativeBalanceSol()) - solBefore);
+    const usdReceived = solReceived * solPriceUsd;
+    const priceUsd = tokensSold > 0 && usdReceived > 0 ? usdReceived / tokensSold : snap.priceUsd;
+    this.log.info({ mint, txSig, tokensSold, solReceived }, 'Venda via pump.fun confirmada');
+    return { tokensSold, solReceived, usdReceived, priceUsd, txSig, soldAll, venue: 'pumpportal' };
   }
 
   async sell(
@@ -192,7 +290,24 @@ export class LiveBroker implements Broker {
     // slippage normal faz a venda reverter tick após tick enquanto o preço
     // derrete — preço ruim aceito é melhor que preço nenhum.
     const slippageBps = urgent ? this.exec.emergencySlippageBps : this.exec.slippageBps;
-    const quote = await this.jupiter.quote(mint, WSOL_MINT, sellRaw, slippageBps);
+    let quote;
+    try {
+      quote = await this.jupiter.quote(mint, WSOL_MINT, sellRaw, slippageBps);
+    } catch (err) {
+      // Sem rota no Jupiter, a SAÍDA não pode ficar presa: vende pela curve/
+      // pumpswap direto. Slippage de emergência — sair vale mais que o preço.
+      if (this.exec.pumpportalFallback && isNoRouteError(err)) {
+        this.log.warn({ mint }, 'Jupiter sem rota — vendendo via pump.fun (PumpPortal)');
+        return this.sellViaPumpPortal(
+          mint,
+          rawToUi(sellRaw, decimals),
+          pct >= 100 || sellRaw === raw,
+          snap,
+          solPriceUsd,
+        );
+      }
+      throw err;
+    }
     const wallet = this.chain.walletAddress();
     if (!wallet) throw new Error('Modo live sem carteira carregada');
     const { txBase64, lastValidBlockHeight } = await this.jupiter.swapTransaction(
@@ -222,6 +337,7 @@ export class LiveBroker implements Broker {
       priceUsd,
       txSig,
       soldAll: pct >= 100 || sellRaw === raw,
+      venue: 'jupiter',
     };
   }
 }

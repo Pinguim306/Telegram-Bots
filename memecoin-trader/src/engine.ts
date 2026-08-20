@@ -99,6 +99,12 @@ export interface TokenAnalysis {
   report: RiskReport;
 }
 
+
+/** Market cap "melhor esforço" de um snapshot (mcap, senão FDV, senão null). */
+function snapMcap(snap: PairSnapshot | null): number | null {
+  return snap?.marketCapUsd ?? snap?.fdvUsd ?? null;
+}
+
 const LAST_SOL_USD_KEY = 'last_sol_usd';
 
 export class TraderEngine {
@@ -145,7 +151,27 @@ export class TraderEngine {
       return;
     }
     await this.managePositions(solUsd, nowTs);
-    await this.scanForEntries(solUsd, nowTs);
+    const scan = await this.scanForEntries(solUsd, nowTs);
+
+    // Heartbeat: uma linha por tick SEMPRE, mesmo sem nenhuma ação. Sem isso,
+    // minutos de gates reprovando tudo (normal no perfil de scalp) ficam
+    // indistinguíveis de um bot travado.
+    const abertas = listOpenPositions(this.db, this.broker.mode).length;
+    if (scan.blocked) {
+      this.log.info({ abertas, motivo: scan.blocked }, 'Tick: gestão ok — sem novas entradas');
+    } else {
+      this.log.info(
+        {
+          abertas,
+          candidatos: scan.candidates,
+          comPar: scan.withPair,
+          aptosNosGates: scan.eligible,
+          analisados: scan.analyzed,
+          compras: scan.bought,
+        },
+        'Tick concluído',
+      );
+    }
   }
 
   /** Preço do SOL com fallback para o último visto — e nunca um número inventado. */
@@ -289,18 +315,26 @@ export class TraderEngine {
         solAmount: fill.solReceived,
         tokenAmount: fill.tokensSold,
         priceUsd: fill.priceUsd,
+        mcapUsd: snapMcap(snap),
+        venue: fill.venue ?? null,
         txSig: fill.txSig,
         ok: true,
       });
-      this.settleSell(fresh, fill, reason, nowTs);
+      this.settleSell(fresh, fill, reason, nowTs, snapMcap(snap));
     } catch (err) {
       await this.handleSellFailure(fresh, portionPct, snap, solUsd, reason, nowTs, err as Error);
     }
   }
 
   /** Contabiliza um fill de venda: fecha/parcial, estatística diária, cooldown. */
-  private settleSell(fresh: Position, fill: SellFill, reason: string, nowTs: number): void {
-    const { position, closed, applied } = applySellFill(this.db, fresh, fill, reason, nowTs);
+  private settleSell(
+    fresh: Position,
+    fill: SellFill,
+    reason: string,
+    nowTs: number,
+    exitMcapUsd: number | null = null,
+  ): void {
+    const { position, closed, applied } = applySellFill(this.db, fresh, fill, reason, nowTs, exitMcapUsd);
     if (!applied) {
       this.log.warn(
         { mint: fresh.mint, reason },
@@ -369,6 +403,8 @@ export class TraderEngine {
       solAmount: 0,
       tokenAmount: 0,
       priceUsd: snap.priceUsd,
+      mcapUsd: snapMcap(snap),
+      venue: null,
       txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
       ok: false,
       error: err.message,
@@ -384,6 +420,7 @@ export class TraderEngine {
         { tokensSold: fresh.tokensQty, solReceived: 0, usdReceived: 0, priceUsd: 0, txSig: null, soldAll: true },
         `${reason} (reconciliado: carteira sem saldo)`,
         nowTs,
+        snapMcap(snap),
       );
       return;
     }
@@ -409,6 +446,7 @@ export class TraderEngine {
           },
           `${reason} (reconciliado pós-timeout)`,
           nowTs,
+          snapMcap(snap),
         );
         return;
       }
@@ -424,12 +462,23 @@ export class TraderEngine {
   //  Descoberta e entrada
   // ───────────────────────────────────────────────────────────
 
-  private async scanForEntries(solUsd: number, nowTs: number): Promise<void> {
+  private async scanForEntries(
+    solUsd: number,
+    nowTs: number,
+  ): Promise<{
+    blocked: string | null;
+    candidates: number;
+    withPair: number;
+    eligible: number;
+    analyzed: number;
+    bought: number;
+  }> {
+    const stats = { blocked: null as string | null, candidates: 0, withPair: 0, eligible: 0, analyzed: 0, bought: 0 };
     const balance = await this.broker.balanceSol();
     const daily = getDailyStats(this.db, nowTs);
     const open = listOpenPositions(this.db, this.broker.mode);
 
-    const blocked = blockReason(
+    stats.blocked = blockReason(
       {
         balanceSol: balance,
         openPositions: open.length,
@@ -438,19 +487,18 @@ export class TraderEngine {
       },
       this.cfg.sizing,
     );
-    if (blocked) {
-      this.log.debug({ blocked }, 'Sem capacidade para novas entradas');
-      return;
-    }
+    if (stats.blocked) return stats;
 
     const candidates = await this.discover(open, nowTs);
-    if (candidates.length === 0) return;
+    stats.candidates = candidates.length;
+    if (candidates.length === 0) return stats;
 
     const snaps = await this.sources.pairs(candidates.map((c) => c.mint));
     const scored: { cand: Candidate; snap: PairSnapshot; entry: EntryResult }[] = [];
     for (const cand of candidates) {
       const snap = snaps.get(cand.mint);
       if (!snap) continue;
+      stats.withPair++;
       const entry = evaluateEntry(snap, cand.sources, this.cfg.entry);
       if (!entry.eligible) {
         this.log.debug({ mint: cand.mint, symbol: snap.symbol, gate: entry.rejection }, 'Gate reprovou');
@@ -459,11 +507,15 @@ export class TraderEngine {
       if (entry.score < this.cfg.entry.minScore) continue;
       scored.push({ cand, snap, entry });
     }
+    stats.eligible = scored.length;
     scored.sort((a, b) => b.entry.score - a.entry.score);
 
     for (const { cand, snap, entry } of scored.slice(0, this.cfg.loop.candidatesPerTick)) {
-      await this.tryEnter(cand, snap, entry, solUsd, daily.realizedPnlSol, nowTs);
+      stats.analyzed++;
+      const bought = await this.tryEnter(cand, snap, entry, solUsd, daily.realizedPnlSol, nowTs);
+      if (bought) stats.bought++;
     }
+    return stats;
   }
 
   private async discover(open: Position[], nowTs: number): Promise<Candidate[]> {
@@ -530,7 +582,7 @@ export class TraderEngine {
     solUsd: number,
     dailyPnlSol: number,
     nowTs: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const analysis = await this.analyzeToken(cand.mint, isCurvePair(snap.dexId, this.cfg.entry));
     const { report } = analysis;
 
@@ -556,7 +608,7 @@ export class TraderEngine {
         },
         'Risco reprovou o token',
       );
-      return;
+      return false;
     }
 
     // Capacidade reavaliada AQUI: compras anteriores deste mesmo tick já podem
@@ -574,12 +626,13 @@ export class TraderEngine {
     );
     if (size === null) {
       this.log.debug({ mint: cand.mint }, 'Sem tamanho de posição viável');
-      return;
+      return false;
     }
 
     try {
       const fill = await this.broker.buy(cand.mint, size, snap, solUsd);
       this.settleBuy(cand.mint, snap, entry.score, report.score, entry.reasons.join(', '), fill, nowTs);
+      return true;
     } catch (err) {
       recordOrder(this.db, {
         positionId: null,
@@ -590,6 +643,8 @@ export class TraderEngine {
         solAmount: size,
         tokenAmount: 0,
         priceUsd: snap.priceUsd,
+        mcapUsd: snapMcap(snap),
+        venue: null,
         txSig: err instanceof UnknownTxOutcomeError ? err.signature : null,
         ok: false,
         error: (err as Error).message,
@@ -619,11 +674,12 @@ export class TraderEngine {
             },
             nowTs,
           );
-          return;
+          return true;
         }
       }
       this.log.error({ mint: cand.mint, err: (err as Error).message }, 'Compra falhou');
     }
+    return false;
   }
 
   /** Grava posição + ordem de uma compra que (comprovadamente) aconteceu. */
@@ -643,6 +699,7 @@ export class TraderEngine {
       symbol: snap.symbol,
       entryTs: nowTs,
       entryLiquidityUsd: snap.liquidityUsd ?? 0,
+      entryMcapUsd: snapMcap(snap),
       entryScore,
       entryRiskScore: riskScore,
       entryReasons,
@@ -657,6 +714,8 @@ export class TraderEngine {
       solAmount: fill.solSpent,
       tokenAmount: fill.tokensQty,
       priceUsd: fill.priceUsd,
+      mcapUsd: snapMcap(snap),
+      venue: fill.venue ?? null,
       txSig: fill.txSig,
       ok: true,
     });

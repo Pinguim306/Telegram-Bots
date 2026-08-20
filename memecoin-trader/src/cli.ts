@@ -160,6 +160,7 @@ async function cmdStatus(): Promise<void> {
       cleanLabel(p.symbol, 12),
       shortAddr(p.mint),
       sol(p.solSpent),
+      p.entryMcapUsd !== null ? usd(p.entryMcapUsd) : '?',
       `$${price(p.entryPriceUsd)}`,
       `$${price(current)}`,
       pct(pnlPct),
@@ -168,7 +169,7 @@ async function cmdStatus(): Promise<void> {
     ];
   });
   console.log(
-    table(rows, ['Token', 'Mint', 'Entrada(SOL)', 'Preço entr.', 'Preço atual', 'PnL', 'Tempo', '']),
+    table(rows, ['Token', 'Mint', 'Entrada(SOL)', 'MC entr.', 'Preço entr.', 'Preço atual', 'PnL', 'Tempo', '']),
   );
 }
 
@@ -255,11 +256,15 @@ async function cmdHistory(args: string[]): Promise<void> {
     p.exitTs ? new Date(p.exitTs * 1000).toISOString().slice(5, 16).replace('T', ' ') : '?',
     cleanLabel(p.symbol, 12),
     sol(p.solSpent),
+    p.entryMcapUsd !== null ? usd(p.entryMcapUsd) : '?',
+    p.exitMcapUsd !== null ? usd(p.exitMcapUsd) : '?',
     sol(p.pnlSol ?? 0),
     pct(p.pnlPct ?? 0),
     p.exitReason ?? '?',
   ]);
-  console.log(table(rows, ['Saída (UTC)', 'Token', 'Gasto(SOL)', 'PnL(SOL)', 'PnL%', 'Motivo']));
+  console.log(
+    table(rows, ['Saída (UTC)', 'Token', 'Gasto(SOL)', 'MC entr.', 'MC saída', 'PnL(SOL)', 'PnL%', 'Motivo']),
+  );
 
   const totalPnl = closed.reduce((a, p) => a + (p.pnlSol ?? 0), 0);
   const wins = closed.filter((p) => (p.pnlSol ?? 0) >= 0).length;

@@ -17,8 +17,8 @@ function pumpingSnap(overrides: Partial<PairSnapshot> = {}): PairSnapshot {
     priceUsd: 0.001,
     priceNative: 0.000005,
     liquidityUsd: 80_000,
-    fdvUsd: 60_000,
-    marketCapUsd: 60_000,
+    fdvUsd: 25_000,
+    marketCapUsd: 25_000,
     vol5mUsd: 8_000,
     vol1hUsd: 60_000,
     vol24hUsd: 200_000,
@@ -76,9 +76,10 @@ describe('evaluateEntry — gates', () => {
 
   it('bonding curve (pumpfun): liquidez ausente é estrutural e NÃO reprova', () => {
     // O DexScreener não reporta `liquidity` para o par da curve — visto em
-    // token real: mcap $36k, 9min de vida, liquidity ausente, +342% em 5m.
+    // token real (liquidity ausente, minutos de vida, +342% em 5m). O mcap do
+    // fixture fica dentro da banda [minMarketCapUsd, maxMarketCapUsd] do config.
     const result = evaluateEntry(
-      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: 36_000, fdvUsd: 36_000 }),
+      pumpingSnap({ dexId: 'pumpfun', liquidityUsd: null, marketCapUsd: 25_000, fdvUsd: 25_000 }),
       ['gt-trending'],
       cfg.entry,
     );
