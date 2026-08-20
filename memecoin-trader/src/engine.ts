@@ -523,7 +523,12 @@ export class TraderEngine {
         this.log.debug({ mint: cand.mint, symbol: snap.symbol, gate: entry.rejection }, 'Gate reprovou');
         continue;
       }
-      if (entry.score < this.cfg.entry.minScore) continue;
+      if (entry.score < this.cfg.entry.minScore) {
+        // Passou nos gates mas não somou sinal suficiente — contar separado é o
+        // que distingue "mercado frio" de "filtros errados" na calibração.
+        stats.gateTally['score'] = (stats.gateTally['score'] ?? 0) + 1;
+        continue;
+      }
       scored.push({ cand, snap, entry });
     }
     stats.eligible = scored.length;

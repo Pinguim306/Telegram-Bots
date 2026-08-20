@@ -146,6 +146,7 @@ describe('evaluateEntry — gates', () => {
   it('token morno passa nos gates mas não soma o score mínimo', () => {
     const result = evaluateEntry(
       pumpingSnap({
+        ageMin: 40, // ritmo 26k/40 = $650/min — passa no gate de ritmo
         change5mPct: 0.1,
         change1hPct: 0.5,
         vol1hUsd: 26_000,
@@ -158,6 +159,34 @@ describe('evaluateEntry — gates', () => {
     );
     expect(result.eligible).toBe(true);
     expect(result.score).toBeLessThan(cfg.entry.minScore);
+  });
+
+  it('ritmo é proporcional à idade: jovem com pouco volume absoluto passa, velho com o mesmo volume não', () => {
+    // 8 minutos de vida, $6k negociados = $750/min: acima do piso absoluto (2.5k)
+    // e do ritmo mínimo (500/min) — o alvo real da estratégia.
+    const jovem = evaluateEntry(
+      pumpingSnap({ ageMin: 8, vol1hUsd: 6_000, vol24hUsd: 6_000 }),
+      ['pp-migration'],
+      cfg.entry,
+    );
+    expect(jovem.eligible).toBe(true);
+
+    // Mesmos $6k mas em 60 minutos = $100/min: morto, e o motivo é o ritmo.
+    const velho = evaluateEntry(
+      pumpingSnap({ ageMin: 60, vol1hUsd: 6_000, vol24hUsd: 6_000 }),
+      [],
+      cfg.entry,
+    );
+    expect(velho.eligible).toBe(false);
+    expect(velho.rejection).toContain('ritmo');
+  });
+
+  it('piso absoluto de volume segue cortando poeira, mesmo com ritmo alto', () => {
+    // 2 minutos e $2k: ritmo $1000/min, mas abaixo do piso de $2.5k... e da idade mínima.
+    // Usa 4min/$2k: ritmo 500/min ok, piso 2.5k reprova.
+    const result = evaluateEntry(pumpingSnap({ ageMin: 4, vol1hUsd: 2_000, vol24hUsd: 2_000 }), [], cfg.entry);
+    expect(result.eligible).toBe(false);
+    expect(result.rejection).toContain('volume');
   });
 });
 

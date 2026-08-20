@@ -115,6 +115,16 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | nu
   if (snap.vol1hUsd < g.minVolume1hUsd) {
     return ['volume', `volume 1h $${snap.vol1hUsd.toFixed(0)} < $${g.minVolume1hUsd}`];
   }
+  // Ritmo proporcional à idade, não volume absoluto: exigir $X de vol1h de um
+  // token de 10 minutos é exigir que só foguetes passem — em produção o gate
+  // absoluto matava ~70% de todos os candidatos com par.
+  if (g.minVolumePaceUsdPerMin > 0) {
+    const windowMin = snap.ageMin !== null ? Math.max(1, Math.min(snap.ageMin, 60)) : 60;
+    const pace = snap.vol1hUsd / windowMin;
+    if (pace < g.minVolumePaceUsdPerMin) {
+      return ['ritmo', `ritmo $${pace.toFixed(0)}/min < $${g.minVolumePaceUsdPerMin}/min`];
+    }
+  }
   // Idade desconhecida não reprova: rejeitar por não saber silenciaria tokens
   // legítimos que o indexador ainda não datou. As DEMAIS defesas continuam valendo.
   if (snap.ageMin !== null) {

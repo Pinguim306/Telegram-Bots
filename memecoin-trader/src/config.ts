@@ -90,7 +90,15 @@ const entrySchema = z.object({
     minLiquidityUsd: z.number().min(0),
     /** 0 = sem teto. */
     maxLiquidityUsd: z.number().min(0),
+    /** Piso ABSOLUTO de volume 1h — só corta poeira. O filtro real é o ritmo abaixo. */
     minVolume1hUsd: z.number().min(0),
+    /**
+     * Ritmo mínimo de negociação: volume 1h dividido pelos minutos de vida
+     * (teto 60). Um token de 10min com $8k negociados ($800/min) está mais
+     * quente que um de 60min com $25k ($417/min) — volume absoluto pune
+     * exatamente os recém-nascidos que a estratégia caça. 0 = desligado.
+     */
+    minVolumePaceUsdPerMin: z.number().min(0),
     minAgeMin: z.number().min(0),
     /** 0 = sem teto. */
     maxAgeHours: z.number().min(0),
