@@ -118,6 +118,28 @@ function migrate(db: Db): void {
       wins             INTEGER NOT NULL DEFAULT 0,
       losses           INTEGER NOT NULL DEFAULT 0
     );
+
+    -- Cada decisão FINAL do funil sobre um candidato analisado (comprado,
+    -- reprovado pelo risco, reprovado pela IA...), com o snapshot da hora.
+    -- É o dado que o log jogava fora: sem ele, calibrar limiar é palpite —
+    -- o comando replay lê daqui e responde "as reprovações teriam dado lucro?".
+    CREATE TABLE IF NOT EXISTS decisions (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts            INTEGER NOT NULL,
+      mode          TEXT NOT NULL,
+      mint          TEXT NOT NULL,
+      symbol        TEXT NOT NULL,
+      stage         TEXT NOT NULL,
+      outcome       TEXT NOT NULL,
+      entry_score   REAL NOT NULL,
+      risk_score    REAL,
+      ai_decision   TEXT,
+      ai_confidence REAL,
+      price_usd     REAL NOT NULL,
+      config_hash   TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts);
   `);
 
   ensureColumn(db, 'positions', 'entry_mcap_usd', 'REAL');
@@ -572,4 +594,103 @@ export function getDailyStats(db: Db, ts: number): DailyStats {
         losses: row.losses,
       }
     : { day, realizedPnlSol: 0, realizedPnlUsd: 0, trades: 0, wins: 0, losses: 0 };
+}
+
+// ─────────────────────────────────────────────────────────────
+//  decisions — o funil gravado, para o replay calibrar com número
+// ─────────────────────────────────────────────────────────────
+
+/** Onde o funil parou para este candidato. */
+export type DecisionStage = 'comprado' | 'risco' | 'ia' | 'capacidade';
+
+export interface Decision {
+  id: number;
+  ts: number;
+  mode: TradeMode;
+  mint: string;
+  symbol: string;
+  stage: DecisionStage;
+  /** Motivo humano: flags do risco, motivo da IA, "sem tamanho viável"... */
+  outcome: string;
+  entryScore: number;
+  riskScore: number | null;
+  aiDecision: string | null;
+  aiConfidence: number | null;
+  priceUsd: number;
+  /** Hash do config vigente (entry/risk/ai) — replay agrupa por era de config. */
+  configHash: string;
+  /** PairSnapshot completo na hora da decisão (JSON). */
+  snapshotJson: string;
+}
+
+export function recordDecision(db: Db, d: Omit<Decision, 'id'>): void {
+  db.prepare(
+    `INSERT INTO decisions (ts, mode, mint, symbol, stage, outcome, entry_score, risk_score,
+       ai_decision, ai_confidence, price_usd, config_hash, snapshot_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    d.ts,
+    d.mode,
+    d.mint,
+    d.symbol,
+    d.stage,
+    d.outcome,
+    d.entryScore,
+    d.riskScore,
+    d.aiDecision,
+    d.aiConfidence,
+    d.priceUsd,
+    d.configHash,
+    d.snapshotJson,
+  );
+}
+
+interface DecisionRow {
+  id: number;
+  ts: number;
+  mode: string;
+  mint: string;
+  symbol: string;
+  stage: string;
+  outcome: string;
+  entry_score: number;
+  risk_score: number | null;
+  ai_decision: string | null;
+  ai_confidence: number | null;
+  price_usd: number;
+  config_hash: string;
+  snapshot_json: string;
+}
+
+export function listDecisions(
+  db: Db,
+  mode: TradeMode,
+  sinceTs: number,
+  stage?: DecisionStage,
+): Decision[] {
+  const rows = (
+    stage
+      ? db
+          .prepare(
+            'SELECT * FROM decisions WHERE mode = ? AND ts >= ? AND stage = ? ORDER BY ts DESC',
+          )
+          .all(mode, sinceTs, stage)
+      : db.prepare('SELECT * FROM decisions WHERE mode = ? AND ts >= ? ORDER BY ts DESC').all(mode, sinceTs)
+  ) as DecisionRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    mode: r.mode as TradeMode,
+    mint: r.mint,
+    symbol: r.symbol,
+    stage: r.stage as DecisionStage,
+    outcome: r.outcome,
+    entryScore: r.entry_score,
+    riskScore: r.risk_score,
+    aiDecision: r.ai_decision,
+    aiConfidence: r.ai_confidence,
+    priceUsd: r.price_usd,
+    configHash: r.config_hash,
+    snapshotJson: r.snapshot_json,
+  }));
 }

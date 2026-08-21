@@ -2,9 +2,10 @@ import type { Advisor } from './advisor.js';
 import { NoBalanceError } from './brokers.js';
 import { UnknownTxOutcomeError } from './chains/solana/index.js';
 import type { LinkageReport } from './chains/solana/linkage.js';
-import type { TraderConfig } from './config.js';
+import { configHash, type TraderConfig } from './config.js';
 import {
   applySellFill,
+  recordDecision,
   bumpDailyStats,
   getDailyStats,
   getOpenPositionByMint,
@@ -877,6 +878,32 @@ export class TraderEngine {
     const analysis = await this.analyzeToken(cand.mint, curve);
     const { report } = analysis;
 
+    // Toda decisão FINAL do funil fica gravada com o snapshot da hora. É o
+    // dado que o log jogava fora: o comando `replay` lê daqui e responde, com
+    // OHLCV real, se as reprovações teriam dado lucro — calibração vira
+    // medição em vez de palpite.
+    const decide = (
+      stage: 'comprado' | 'risco' | 'ia' | 'capacidade',
+      outcome: string,
+      ai?: { decision: string; confidence: number },
+    ): void => {
+      recordDecision(this.db, {
+        ts: nowTs,
+        mode: this.broker.mode,
+        mint: cand.mint,
+        symbol: snap.symbol,
+        stage,
+        outcome,
+        entryScore: entry.score,
+        riskScore: report.score,
+        aiDecision: ai?.decision ?? null,
+        aiConfidence: ai?.confidence ?? null,
+        priceUsd: snap.priceUsd,
+        configHash: configHash(this.cfg),
+        snapshotJson: JSON.stringify(snap),
+      });
+    };
+
     upsertTokenLog(
       this.db,
       cand.mint,
@@ -903,6 +930,7 @@ export class TraderEngine {
         },
         'Risco reprovou o token',
       );
+      decide('risco', `${report.verdict}: ${report.flags.map((f) => f.id).join(', ')}`);
       return false;
     }
 
@@ -925,8 +953,16 @@ export class TraderEngine {
         curve,
       });
       if (verdict) {
+        // O veto tem que ser SIMÉTRICO: minConfidence filtra as aprovações e
+        // minSkipConfidence filtra os vetos. O prompt manda a IA, na dúvida,
+        // pular com confiança baixa — sem o segundo limiar essa dúvida
+        // bloqueava como se fosse certeza (medido: 11 de 11 candidatos que
+        // passaram em gates+risco morreram num "pular" de 66–78).
+        const lowConfidenceSkip =
+          verdict.decision === 'pular' && verdict.confidence < this.cfg.ai.minSkipConfidence;
         const approved =
-          verdict.decision === 'comprar' && verdict.confidence >= this.cfg.ai.minConfidence;
+          (verdict.decision === 'comprar' && verdict.confidence >= this.cfg.ai.minConfidence) ||
+          lowConfidenceSkip;
         this.log.info(
           {
             mint: cand.mint,
@@ -935,13 +971,20 @@ export class TraderEngine {
             confianca: verdict.confidence,
             motivo: verdict.reason,
           },
-          approved ? 'IA aprovou a entrada' : 'IA reprovou a entrada',
+          approved
+            ? lowConfidenceSkip
+              ? 'IA em dúvida (pular com confiança baixa) — critérios quantitativos decidem'
+              : 'IA aprovou a entrada'
+            : 'IA reprovou a entrada',
         );
         if (!approved) {
           if (tally) tally['ia'] = (tally['ia'] ?? 0) + 1;
+          decide('ia', verdict.reason, verdict);
           return false;
         }
-        aiNote = ` · IA ${verdict.confidence}%: ${verdict.reason}`;
+        aiNote = lowConfidenceSkip
+          ? ` · IA em dúvida (${verdict.confidence}%): ${verdict.reason}`
+          : ` · IA ${verdict.confidence}%: ${verdict.reason}`;
       }
     }
 
@@ -961,6 +1004,7 @@ export class TraderEngine {
     );
     if (size === null) {
       this.log.debug({ mint: cand.mint }, 'Sem tamanho de posição viável');
+      decide('capacidade', 'sem tamanho de posição viável');
       return false;
     }
 
@@ -975,6 +1019,7 @@ export class TraderEngine {
         fill,
         nowTs,
       );
+      decide('comprado', entry.reasons.join(', ') + aiNote);
       return true;
     } catch (err) {
       recordOrder(this.db, {

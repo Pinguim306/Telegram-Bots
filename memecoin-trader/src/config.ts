@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -279,6 +280,16 @@ const aiSchema = z.object({
   effort: z.enum(['low', 'medium', 'high']),
   /** Confiança mínima (0–100) do veredito "comprar" para a compra prosseguir. */
   minConfidence: z.number().min(0).max(100),
+  /**
+   * Confiança mínima (0–100) para um veredito "pular" VETAR a compra.
+   *
+   * Sem isto o veto era assimétrico: minConfidence filtrava só as aprovações,
+   * e um "pular" bloqueava com QUALQUER confiança — enquanto o prompt manda a
+   * IA, na dúvida, pular com confiança baixa. Medido em produção: 11 de 11
+   * candidatos que sobreviveram a gates+risco morreram num "pular" de 66–78.
+   * Abaixo do limiar, a dúvida da IA vira nota no log, não veto.
+   */
+  minSkipConfidence: z.number().min(0).max(100).default(75),
   /** Teto de chamadas por hora — trava de custo. Excedeu = segue sem IA. */
   maxCallsPerHour: z.number().int().min(1),
   timeoutSec: z.number().int().min(5),
@@ -305,6 +316,7 @@ export const traderFileSchema = z.object({
     model: 'claude-opus-5',
     effort: 'low',
     minConfidence: 65,
+    minSkipConfidence: 75,
     maxCallsPerHour: 60,
     timeoutSec: 30,
   }),
@@ -436,4 +448,14 @@ export function assertLiveAllowed(env: TraderEnv): void {
       'TRADER_MODE=live exige SOLANA_PRIVATE_KEY ou SOLANA_KEYPAIR_FILE no .env.',
     );
   }
+}
+
+/**
+ * Hash curto das seções que DECIDEM uma entrada (entry/risk/ai). Gravado em
+ * cada linha de `decisions`: sem ele, o replay compararia decisões tomadas
+ * sob configs diferentes como se fossem a mesma política.
+ */
+export function configHash(cfg: TraderConfig): string {
+  const relevant = JSON.stringify({ entry: cfg.entry, risk: cfg.risk, ai: cfg.ai });
+  return createHash('sha256').update(relevant).digest('hex').slice(0, 8);
 }

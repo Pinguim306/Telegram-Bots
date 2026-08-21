@@ -5,7 +5,7 @@ import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NoBalanceError, PaperBroker } from '../src/brokers.js';
 import { loadTraderConfig } from '../src/config.js';
-import { getDailyStats, listClosedPositions, listOpenPositions, openTraderDb, type Db } from '../src/db.js';
+import { getDailyStats, listClosedPositions, listDecisions, listOpenPositions, openTraderDb, type Db } from '../src/db.js';
 import type { Advisor, AdvisorVerdict } from '../src/advisor.js';
 import { cachedSource, TraderEngine, type Sources } from '../src/engine.js';
 import type {
@@ -231,6 +231,18 @@ describe('TraderEngine', () => {
     await engine.tick(T0);
     expect(listOpenPositions(db, 'paper')).toHaveLength(0);
     expect(await broker.balanceSol()).toBe(cfg.sizing.paperStartBalanceSol);
+
+    // A decisão fica GRAVADA com o snapshot da hora — é o que o replay lê.
+    // Sem isso, cada reprovação era uma linha de log que rolava para cima e
+    // sumia, e calibrar limiar continuava sendo palpite.
+    const decisions = listDecisions(db, 'paper', 0);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]!.stage).toBe('risco');
+    expect(decisions[0]!.outcome).toContain('rugcheck_danger');
+    expect(decisions[0]!.configHash).toHaveLength(8);
+    const savedSnap = JSON.parse(decisions[0]!.snapshotJson) as PairSnapshot;
+    expect(savedSnap.pairAddress).toBe(snap().pairAddress);
+    expect(savedSnap.priceUsd).toBe(snap().priceUsd);
   });
 
   it('token que some do indexador: sai após N ticks e o paper contabiliza PERDA TOTAL', async () => {
@@ -259,7 +271,7 @@ describe('TraderEngine', () => {
     expect(getDailyStats(db, T0 + 600).realizedPnlSol).toBeCloseTo(-solSpent, 5);
   });
 
-  it('take profit (scalp) fecha a posição inteira com urgent=false e realiza o lucro', async () => {
+  it('take profit realiza a PARCELA configurada (não urgente) e deixa o resto correr no trailing', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const broker = new UrgentSpyBroker(db, cfg.execution, cfg.sizing);
     const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
@@ -267,16 +279,25 @@ describe('TraderEngine', () => {
     await engine.tick(T0);
     expect(listOpenPositions(db, 'paper')).toHaveLength(1);
     const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+    const qtyBefore = listOpenPositions(db, 'paper')[0]!.tokensQty;
 
-    // Preço no alvo do scalp (sem drawdown do topo) -> vende TUDO, não urgente.
+    // Preço no alvo (sem drawdown do topo) -> vende a parcela do TP, não urgente.
+    // Vender 100% no alvo era o que impedia qualquer vencedor de correr — o
+    // payoff ficava travado em +10 contra perdas reais de -26.
     state.snap = snap({ priceUsd: entryPrice * (1 + cfg.exit.takeProfitPct / 100 + 0.02) });
     await engine.tick(T0 + 60);
-    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
     expect(broker.urgentSeen).toEqual([false]);
 
-    const closed = listClosedPositions(db, 'paper');
-    expect(closed[0]!.exitReason).toContain('take profit');
-    expect(closed[0]!.pnlSol!).toBeGreaterThan(0);
+    const open = listOpenPositions(db, 'paper');
+    if (cfg.exit.takeProfitSellPct >= 100) {
+      expect(open).toHaveLength(0);
+    } else {
+      expect(open).toHaveLength(1);
+      expect(open[0]!.tokensQty).toBeCloseTo(qtyBefore * (1 - cfg.exit.takeProfitSellPct / 100), 5);
+      expect(open[0]!.tookProfit).toBe(true);
+      // O que já saiu, saiu com lucro.
+      expect(open[0]!.solReceived).toBeGreaterThan(0);
+    }
   });
 
   it('dreno de liquidez sai com urgent=true', async () => {
@@ -307,6 +328,26 @@ describe('TraderEngine', () => {
     expect(await broker.balanceSol()).toBe(cfg.sizing.paperStartBalanceSol);
   });
 
+  it('IA "pular" com confiança BAIXA não veta — a dúvida da IA não é certeza', async () => {
+    // O veto era assimétrico: minConfidence filtrava só aprovações e qualquer
+    // "pular" bloqueava. Medido em produção: 11 de 11 candidatos que passaram
+    // em gates+risco morreram num "pular" de 66–78 — abaixo do minSkipConfidence.
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const advisor = new FakeAdvisor({
+      decision: 'pular',
+      confidence: cfg.ai.minSkipConfidence - 1,
+      reason: 'na dúvida',
+    });
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log, advisor);
+
+    await engine.tick(T0);
+    const open = listOpenPositions(db, 'paper');
+    expect(open).toHaveLength(1);
+    // O motivo fica gravado como dúvida, para o replay/history saberem depois.
+    expect(open[0]!.entryReasons).toContain('IA em dúvida');
+  });
+
   it('IA "comprar" com confiança abaixo do mínimo também bloqueia', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
@@ -331,6 +372,12 @@ describe('TraderEngine', () => {
     const open = listOpenPositions(db, 'paper');
     expect(open).toHaveLength(1);
     expect(open[0]!.entryReasons).toContain('IA 88%: momentum nascendo');
+
+    // As COMPRAS também entram em `decisions`: o replay compara o que foi
+    // comprado com o que foi reprovado sob a mesma régua.
+    const bought = listDecisions(db, 'paper', 0, 'comprado');
+    expect(bought).toHaveLength(1);
+    expect(bought[0]!.mint).toBe(MINT);
   });
 
   it('IA fora do ar (veredito null) é FAIL-OPEN: a compra segue pelos critérios quantitativos', async () => {

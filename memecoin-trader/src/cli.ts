@@ -14,6 +14,7 @@ import { SolanaChain } from './chains/solana/index.js';
 import {
   getDailyStats,
   listClosedPositions,
+  listDecisions,
   listOpenPositions,
   openTraderDb,
   type Db,
@@ -37,6 +38,7 @@ import { cachedSource, TraderEngine, type Sources } from './engine.js';
 import { startDashboard } from './server.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
+import { fetchMinuteCandles, simulateExit, type SimResult } from './replay.js';
 import { computeTradeStats, MIN_SAMPLE_FOR_DECISION } from './stats.js';
 import { loadKeypair } from './wallet.js';
 import type { Broker, Candidate, ChainAdapter, PairSnapshot } from './types.js';
@@ -55,6 +57,8 @@ Comandos:
                           Compra manual (passa pela análise de risco; --force ignora)
   sell <mint|all> [pct]   Vende posição aberta (padrão: 100%)
   history [n]             Últimas n posições fechadas (padrão: 20) e totais
+  replay [horas]          Simula, com velas reais, o que as decisões do funil
+                          teriam rendido (padrão: últimas 24h) — calibração com número
   paper-reset             Zera o caixa simulado do modo paper
   doctor                  Valida config, RPC, Jupiter, fontes de dados e carteira
 
@@ -406,6 +410,134 @@ async function cmdSell(args: string[]): Promise<void> {
   console.log('Venda processada. Veja `status` e `history`.');
 }
 
+/** Teto de buscas de OHLCV por execução — o limite público do GT é 30/min. */
+const REPLAY_MAX_POOLS = 30;
+
+async function cmdReplay(args: string[]): Promise<void> {
+  const hours = args[0] ? Number(args[0]) : 24;
+  const env = loadEnv();
+  const cfg = loadTraderConfig(configPathForChain(env.chain));
+  const db = openTraderDb(env.dataDir, env.chain);
+  const sinceTs = Math.floor(Date.now() / 1000) - (Number.isFinite(hours) ? hours : 24) * 3600;
+
+  const decisions = listDecisions(db, env.mode, sinceTs);
+  if (decisions.length === 0) {
+    console.log(
+      'Nenhuma decisão gravada no período. O funil grava a partir de agora — deixe o bot rodar e volte.',
+    );
+    return;
+  }
+  console.log(
+    `${decisions.length} decisões nas últimas ${hours}h — simulando com velas de minuto do GeckoTerminal…\n` +
+      'Números são o TETO otimista (stop no preço nominal; medido em produção ele executa ~2x pior).\n',
+  );
+
+  // Uma busca de velas por pool (decisões repetidas do mesmo token reusam).
+  const candlesByPool = new Map<string, Awaited<ReturnType<typeof fetchMinuteCandles>>>();
+  const uniquePools = new Set(
+    decisions
+      .map((d) => (JSON.parse(d.snapshotJson) as { pairAddress?: string }).pairAddress ?? '')
+      .filter((a) => a !== ''),
+  );
+  const dropped = Math.max(0, uniquePools.size - REPLAY_MAX_POOLS);
+  if (dropped > 0) {
+    console.log(
+      `(${uniquePools.size} pools no período; simulando os ${REPLAY_MAX_POOLS} mais recentes — ` +
+        `${dropped} ficam de fora pelo rate limit do GT. Rode com menos horas para cobrir tudo.)\n`,
+    );
+  }
+
+  interface Bucket {
+    n: number;
+    sim: SimResult[];
+    semDados: number;
+  }
+  const byStage = new Map<string, Bucket>();
+  const bucket = (stage: string): Bucket => {
+    let b = byStage.get(stage);
+    if (!b) {
+      b = { n: 0, sim: [], semDados: 0 };
+      byStage.set(stage, b);
+    }
+    return b;
+  };
+
+  let fetched = 0;
+  for (const d of decisions) {
+    const snap = JSON.parse(d.snapshotJson) as { pairAddress?: string };
+    const pool = snap.pairAddress ?? '';
+    const b = bucket(d.stage);
+    b.n++;
+    if (pool === '') {
+      b.semDados++;
+      continue;
+    }
+    if (!candlesByPool.has(pool)) {
+      if (fetched >= REPLAY_MAX_POOLS) {
+        b.semDados++;
+        continue;
+      }
+      fetched++;
+      candlesByPool.set(
+        pool,
+        await fetchMinuteCandles(env.chain, pool, d.ts, cfg.exit.maxHoldMin + 30),
+      );
+      // Rate limit público do GT: 30/min. 2,1s entre buscas cabe na janela.
+      await new Promise((r) => setTimeout(r, 2100));
+    }
+    const candles = candlesByPool.get(pool) ?? null;
+    const result = candles ? simulateExit(candles, d.ts, d.priceUsd, cfg.exit) : null;
+    if (result === null) b.semDados++;
+    else b.sim.push(result);
+  }
+
+  const median = (xs: number[]): number => {
+    const s = [...xs].sort((a, b2) => a - b2);
+    return s.length === 0 ? NaN : s[Math.floor((s.length - 1) / 2)]!;
+  };
+
+  const ordem = ['comprado', 'risco', 'ia', 'capacidade'];
+  for (const stage of [...byStage.keys()].sort((a, b2) => ordem.indexOf(a) - ordem.indexOf(b2))) {
+    const b = byStage.get(stage)!;
+    const pnls = b.sim.map((r) => r.pnlPct);
+    const wins = pnls.filter((p2) => p2 > 0).length;
+    const nome =
+      stage === 'comprado'
+        ? 'COMPRADAS'
+        : stage === 'risco'
+          ? 'reprovadas pelo RISCO'
+          : stage === 'ia'
+            ? 'reprovadas pela IA'
+            : 'barradas por capacidade';
+    console.log(`${nome}: ${b.n} decisões, ${b.sim.length} simuladas, ${b.semDados} sem dados`);
+    if (b.sim.length > 0) {
+      const reasons = new Map<string, number>();
+      for (const r of b.sim) reasons.set(r.exitReason, (reasons.get(r.exitReason) ?? 0) + 1);
+      console.log(
+        `   PnL simulado: mediana ${pct(median(pnls))} · soma ${pnls.reduce((a2, x) => a2 + x, 0).toFixed(0)}% ` +
+          `· ${wins} teriam dado lucro, ${b.sim.length - wins} prejuízo`,
+      );
+      console.log(
+        `   saídas: ${[...reasons.entries()].map(([k, v]) => `${k} ×${v}`).join(' · ')}`,
+      );
+    }
+    console.log('');
+  }
+
+  // O veredito que importa: o filtro está salvando ou custando dinheiro?
+  for (const stage of ['risco', 'ia'] as const) {
+    const b = byStage.get(stage);
+    if (!b || b.sim.length === 0) continue;
+    const soma = b.sim.reduce((a2, r) => a2 + r.pnlPct, 0);
+    const nome = stage === 'risco' ? 'risco' : 'IA';
+    console.log(
+      soma <= 0
+        ? `✅ O filtro de ${nome} está SALVANDO dinheiro: as reprovações teriam somado ${soma.toFixed(0)}%.`
+        : `⚠️  O filtro de ${nome} pode estar caro: as reprovações teriam somado +${soma.toFixed(0)}% (teto otimista — confirme com mais amostra antes de afrouxar).`,
+    );
+  }
+}
+
 async function cmdHistory(args: string[]): Promise<void> {
   const limit = args[0] ? Number(args[0]) : 20;
   const ctx = await buildCtx();
@@ -656,6 +788,8 @@ async function main(): Promise<void> {
       return cmdSell(rest);
     case 'history':
       return cmdHistory(rest);
+    case 'replay':
+      return cmdReplay(rest);
     case 'paper-reset':
       return cmdPaperReset();
     case 'doctor':

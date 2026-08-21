@@ -136,10 +136,10 @@
   },
   "exit": {
     "stopLossPct": 12,
-    "takeProfitPct": 10,
-    "takeProfitSellPct": 100,
-    "trailingActivatePct": 6,
-    "trailingStopPct": 5,
+    "takeProfitPct": 25,
+    "takeProfitSellPct": 60,
+    "trailingActivatePct": 8,
+    "trailingStopPct": 8,
     "maxHoldMin": 45,
     "liquidityDrainPct": 50,
     "staleTicksToExit": 4,
@@ -164,6 +164,7 @@
     "model": "claude-opus-5",
     "effort": "low",
     "minConfidence": 65,
+    "minSkipConfidence": 75,
     "maxCallsPerHour": 60,
     "timeoutSec": 30
   },
