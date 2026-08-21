@@ -3,6 +3,7 @@ import { kvGet, kvSet, type Db } from './db.js';
 import { JupiterClient } from './chains/solana/jupiter.js';
 import { LAMPORTS_PER_SOL, SolanaChain } from './chains/solana/index.js';
 import { rawToUi } from './chains/solana/mint.js';
+import { curveRoundTripCostPct, curveSellSolOut, fetchCurveState } from './chains/solana/pumpcurve.js';
 import { fetchTradeLocalTx, isNoRouteError } from './chains/solana/pumpportal-trade.js';
 import { WSOL_MINT } from './datasources/dexscreener.js';
 import type { Logger } from './log.js';
@@ -162,9 +163,20 @@ export class LiveBroker implements Broker {
       const decimals = await this.mintDecimals(mint);
       const raw = BigInt(Math.floor(tokensQty * 10 ** decimals));
       if (raw <= 0n) return null;
-      const quote = await this.jupiter.quote(mint, WSOL_MINT, raw, this.exec.slippageBps);
-      const sol = Number(quote.outAmount) / LAMPORTS_PER_SOL;
-      return Number.isFinite(sol) && sol > 0 ? sol : null;
+      try {
+        const quote = await this.jupiter.quote(mint, WSOL_MINT, raw, this.exec.slippageBps);
+        const sol = Number(quote.outAmount) / LAMPORTS_PER_SOL;
+        return Number.isFinite(sol) && sol > 0 ? sol : null;
+      } catch (err) {
+        // Sem rota no Jupiter = token ainda na bonding curve: a marca sai da
+        // PRÓPRIA curve, lida on-chain — exatamente os tokens comprados via
+        // fallback, que antes ficavam sem marca e caíam no preço de indexador.
+        if (!isNoRouteError(err)) throw err;
+        const curve = await fetchCurveState(this.chain.conn, mint);
+        if (!curve || curve.complete) return null;
+        const sol = Number(curveSellSolOut(curve, raw)) / LAMPORTS_PER_SOL;
+        return sol > 0 ? sol : null;
+      }
     } catch {
       return null;
     }
@@ -196,6 +208,24 @@ export class LiveBroker implements Broker {
       throw new Error(
         `Impacto de preço de ${quote.priceImpactPct.toFixed(1)}% na compra — pool raso demais para esta ordem`,
       );
+    }
+    // Custo ROUND-TRIP medido antes de comprar (quote reversa): impacto de
+    // ida + volta + taxas. Análise dos trades reais: 17 de 22 perdas fecharam
+    // além do stop de -12% — o pedágio de entrar/sair de pool raso era pago
+    // sem nunca ter sido medido. Pedágio maior que o teto = o alvo de +10% já
+    // nasce matematicamente improvável.
+    if (this.exec.maxRoundTripCostPct > 0) {
+      const back = await this.jupiter
+        .quote(mint, WSOL_MINT, BigInt(quote.outAmount), this.exec.slippageBps)
+        .catch(() => null);
+      if (back) {
+        const costPct = (1 - Number(back.outAmount) / Number(quote.inAmount)) * 100;
+        if (costPct > this.exec.maxRoundTripCostPct) {
+          throw new Error(
+            `Custo round-trip de ${costPct.toFixed(1)}% > ${this.exec.maxRoundTripCostPct}% — pool raso: o pedágio come o alvo`,
+          );
+        }
+      }
     }
 
     const wallet = this.chain.walletAddress();
@@ -235,20 +265,51 @@ export class LiveBroker implements Broker {
     const wallet = this.chain.walletAddress();
     if (!wallet) throw new Error('Modo live sem carteira carregada');
 
+    // Guardas da via RASA — antes não existia NENHUMA (a via Jupiter aborta
+    // impacto >10%; esta comprava cega). O pior trade do dia analisado foi
+    // 0,5 SOL comprados aqui: -0,34 SOL em 67 segundos.
+    // 1. Teto de posição próprio do fallback.
+    let effAmount =
+      this.exec.fallbackMaxPositionSol > 0
+        ? Math.min(solAmount, this.exec.fallbackMaxPositionSol)
+        : solAmount;
+    // 2. Sanidade da curve, lida on-chain (x*y=k local): curve completa,
+    //    drenada ou ilegível reprova a compra antes de gastar qualquer SOL.
+    //    (Round-trip imediato em x*y=k custa só as taxas — o gate pega
+    //    patologia, não "impacto"; contra o dump dos outros protegem o gate
+    //    de idade e o teto de posição.)
+    if (this.exec.maxRoundTripCostPct > 0) {
+      const curve = await fetchCurveState(this.chain.conn, mint);
+      if (curve) {
+        const lamports = BigInt(Math.floor(effAmount * LAMPORTS_PER_SOL));
+        const costPct = curve.complete ? 100 : curveRoundTripCostPct(curve, lamports);
+        if (costPct > this.exec.maxRoundTripCostPct) {
+          throw new Error(
+            `Curve reprovada na sanidade: custo round-trip ${costPct.toFixed(1)}% > ${this.exec.maxRoundTripCostPct}% (curve ${curve.complete ? 'completa' : 'drenada/rasa'})`,
+          );
+        }
+      }
+    }
+    if (effAmount < solAmount) {
+      this.log.info(
+        { mint, pedido: solAmount, efetivo: effAmount },
+        'Compra via pump.fun reduzida ao teto do fallback',
+      );
+    }
+
     const tokensBefore = await this.chain.tokenBalanceUi(mint);
-    // Slippage de emergência TAMBÉM na compra de fallback: ele só dispara na
-    // janela pós-graduação, onde o preço move >5% entre quote e execução
-    // (visto em produção: ExceededSlippage com gap de 19%). Compra reprovada
-    // não custa nada (simulação barra antes do envio), mas perde exatamente a
-    // janela que o fallback existe para capturar. O preço de entrada REAL é
-    // medido por delta de saldo — TP/SL seguem honestos sobre o fill de fato.
+    // Slippage PRÓPRIA da compra de fallback (config fallbackBuySlippageBps).
+    // A de emergência (15%) é ferramenta de SAÍDA: usá-la na entrada aceitava
+    // comprar 15% pior — que era exatamente a perda. Compra reprovada na
+    // simulação não custa nada; o preço de entrada REAL segue medido por
+    // delta de saldo — TP/SL honestos sobre o fill de fato.
     const txBytes = await fetchTradeLocalTx({
       publicKey: wallet,
       action: 'buy',
       mint,
-      amount: solAmount,
+      amount: effAmount,
       denominatedInSol: true,
-      slippagePct: this.exec.emergencySlippageBps / 100,
+      slippagePct: this.exec.fallbackBuySlippageBps / 100,
       priorityFeeSol: this.exec.maxPriorityFeeLamports / LAMPORTS_PER_SOL,
     });
     const txSig = await this.chain.signSendAndConfirm(
@@ -261,11 +322,11 @@ export class LiveBroker implements Broker {
     if (tokensQty <= 0) {
       throw new Error(`Compra via pump.fun confirmou mas nenhum token chegou — confira ${txSig}`);
     }
-    const usdSpent = solAmount * solPriceUsd;
-    this.log.info({ mint, txSig, solSpent: solAmount, tokensQty }, 'Compra via pump.fun confirmada');
+    const usdSpent = effAmount * solPriceUsd;
+    this.log.info({ mint, txSig, solSpent: effAmount, tokensQty }, 'Compra via pump.fun confirmada');
     return {
       tokensQty,
-      solSpent: solAmount,
+      solSpent: effAmount,
       usdSpent,
       priceUsd: usdSpent / tokensQty,
       txSig,

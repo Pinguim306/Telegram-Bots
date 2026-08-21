@@ -121,6 +121,9 @@ function migrate(db: Db): void {
   // venda). É o baseline das regras de saída: absorve o custo de entrada
   // (impacto + taxas) que faria todo trade nascer "dentro do stop loss".
   ensureColumn(db, 'positions', 'entry_mark_price_usd', 'REAL');
+  // Ticks seguidos com o mercado do token morto (volume/txns 5m ~zero) — a
+  // saída "token morto" precisa de persistência para sobreviver a restart.
+  ensureColumn(db, 'positions', 'dead_ticks', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'orders', 'mcap_usd', 'REAL');
   ensureColumn(db, 'orders', 'venue', 'TEXT');
 }
@@ -179,6 +182,8 @@ export interface Position {
   lastPriceUsd: number;
   tookProfit: boolean;
   staleTicks: number;
+  /** Ticks seguidos com volume/txns de 5m ~zero — alimenta a saída "token morto". */
+  deadTicks: number;
   solReceived: number;
   usdReceived: number;
   exitTs: number | null;
@@ -213,6 +218,7 @@ interface PositionRow {
   last_price_usd: number;
   took_profit: number;
   stale_ticks: number;
+  dead_ticks: number;
   sol_received: number;
   usd_received: number;
   exit_ts: number | null;
@@ -248,6 +254,7 @@ function mapPosition(row: PositionRow): Position {
     lastPriceUsd: row.last_price_usd,
     tookProfit: row.took_profit === 1,
     staleTicks: row.stale_ticks,
+    deadTicks: row.dead_ticks,
     solReceived: row.sol_received,
     usdReceived: row.usd_received,
     exitTs: row.exit_ts,
@@ -338,10 +345,11 @@ export function updateTickState(
   peakPriceUsd: number,
   lastPriceUsd: number,
   staleTicks: number,
+  deadTicks = 0,
 ): void {
   db.prepare(
-    'UPDATE positions SET peak_price_usd = ?, last_price_usd = ?, stale_ticks = ? WHERE id = ?',
-  ).run(peakPriceUsd, lastPriceUsd, staleTicks, id);
+    'UPDATE positions SET peak_price_usd = ?, last_price_usd = ?, stale_ticks = ?, dead_ticks = ? WHERE id = ?',
+  ).run(peakPriceUsd, lastPriceUsd, staleTicks, deadTicks, id);
 }
 
 export function markTookProfit(db: Db, id: number): void {

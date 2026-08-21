@@ -125,9 +125,15 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | nu
       return ['ritmo', `ritmo $${pace.toFixed(0)}/min < $${g.minVolumePaceUsdPerMin}/min`];
     }
   }
-  // Idade desconhecida não reprova: rejeitar por não saber silenciaria tokens
-  // legítimos que o indexador ainda não datou. As DEMAIS defesas continuam valendo.
-  if (snap.ageMin !== null) {
+  // Idade DESCONHECIDA reprova quando existe gate de idade mínima. A regra
+  // antiga ("não rejeitar por não saber") foi revertida por dados reais: 100%
+  // do prejuízo do dia analisado veio de tokens com <5min de vida, e os sem
+  // data eram exatamente os mais novos (indexador ainda sem pairCreatedAt).
+  // O engine preenche ageMin com o timestamp do PumpPortal quando o mint foi
+  // visto nascer — então "desconhecida" aqui é raro e sempre suspeito.
+  if (snap.ageMin === null) {
+    if (g.minAgeMin > 0) return ['idade_null', 'idade desconhecida — sem data de criação'];
+  } else {
     if (snap.ageMin < g.minAgeMin) {
       return ['idade_min', `idade ${snap.ageMin.toFixed(0)}min < ${g.minAgeMin}min`];
     }
@@ -149,6 +155,13 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | nu
   const buyRatio = txns1h > 0 ? snap.buys1h / txns1h : 0;
   if (buyRatio < g.minBuyRatio1h) {
     return ['ratio', `buy ratio 1h ${(buyRatio * 100).toFixed(0)}% < ${(g.minBuyRatio1h * 100).toFixed(0)}%`];
+  }
+  // Pós-dump não é entrada: os números de 1h ainda carregam o pump inteiro
+  // (volume, txns, ritmo — tudo passa), mas o fluxo REAL já virou. Visto em
+  // produção: compra logo após despencada e o token morreu no chão, sem uma
+  // transação sequer depois.
+  if (g.maxDrop5mPct > 0 && snap.change5mPct <= -g.maxDrop5mPct) {
+    return ['queda_5m', `caiu ${snap.change5mPct.toFixed(1)}% em 5m — pós-dump não é entrada`];
   }
   const mcap = snap.marketCapUsd ?? snap.fdvUsd;
   if (g.minMarketCapUsd > 0) {
@@ -180,6 +193,11 @@ export interface ExitContext {
   tookProfit: boolean;
   /** Ticks seguidos sem dado de preço, ANTES deste tick. */
   staleTicks: number;
+  /**
+   * Ticks seguidos com o mercado MORTO (volume e transações de 5m ~zero),
+   * JÁ contando este tick — o engine conta e persiste; aqui só se compara.
+   */
+  deadTicks: number;
 }
 
 export type ExitDecision =
@@ -250,7 +268,19 @@ export function evaluateExit(
     };
   }
 
-  // 5. Tempo máximo de posição: memecoin sem tese não é investimento de longo prazo.
+  // 5. Token morto no chão: ninguém negocia — o stop loss nunca vai disparar
+  // (o preço não cai, só congela) e cada tick segurando é capital parado num
+  // defunto. Sai pelo que a curve/pool ainda pagar.
+  if (ctx.deadTicks >= cfg.deadTicksToExit) {
+    return {
+      action: 'sell',
+      portionPct: 100,
+      reason: `token morto (sem volume 5m, pnl ${pnlPct.toFixed(1)}%)`,
+      urgent: false,
+    };
+  }
+
+  // 6. Tempo máximo de posição: memecoin sem tese não é investimento de longo prazo.
   if ((nowTs - ctx.entryTs) / 60 >= cfg.maxHoldMin) {
     return {
       action: 'sell',

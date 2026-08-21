@@ -60,6 +60,12 @@ export interface Candidate {
   symbol: string;
   /** De onde veio: 'gt-trending' | 'gt-new' | 'ds-boosts'. Um token pode vir de várias. */
   sources: string[];
+  /**
+   * Quando o bot viu o mint NASCER (ms, evento do PumpPortal). Fallback de
+   * idade para o gate quando o indexador ainda não datou o par — é um piso da
+   * idade real, o que torna o gate de idade mínima conservador, nunca frouxo.
+   */
+  firstSeenTs?: number;
 }
 
 /** O que dá para ler do mint account direto do RPC, sem indexador. */
