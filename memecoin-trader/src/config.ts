@@ -137,6 +137,32 @@ const riskSchema = z.object({
   requireOnchain: z.boolean(),
   maxTop1Pct: z.number().min(0).max(100),
   maxTop10Pct: z.number().min(0).max(100),
+  /**
+   * Limiares de concentração para token NA BONDING CURVE, medidos sobre o
+   * supply CIRCULANTE (o vault da curve é excluído na leitura). São mais
+   * frouxos que os de token graduado porque a base é menor — num token de
+   * minutos, os primeiros compradores naturalmente dominam o circulante; o
+   * que se caça é o extremo: uma ou poucas carteiras com quase tudo.
+   * .default para config antigo continuar válido.
+   */
+  curveMaxTop1Pct: z.number().min(0).max(100).default(30),
+  curveMaxTop10Pct: z.number().min(0).max(100).default(70),
+  /**
+   * Análise de LIGAÇÃO entre as carteiras do topo (token na curve): compra no
+   * mesmo bloco (bundle) e financiador comum (carteira-mãe). Concentração
+   * sozinha não pega 10 carteiras "diferentes" que são um sniper só fatiado.
+   * Custa ~20-30 chamadas de RPC por token analisado — só roda no último
+   * degrau do funil, e falha vira null (nunca trava a análise).
+   */
+  linkageEnabled: z.boolean().default(true),
+  /** Quantas contas do topo checar (teto de custo de RPC). */
+  linkageTopN: z.number().int().min(3).max(20).default(10),
+  /** Tolerância em slots (~0,4s cada) para contar como "mesmo bloco". */
+  linkageSlotTolerance: z.number().int().min(0).max(20).default(2),
+  /** Acima disso, carteiras comprando no mesmo bloco pontuam alto contra. */
+  maxSameSlotCluster: z.number().int().min(1).default(3),
+  /** Acima disso, carteiras com a mesma carteira-mãe pontuam alto contra. */
+  maxSharedFunderCluster: z.number().int().min(1).default(2),
   minLpLockedPct: z.number().min(0).max(100),
   maxRugcheckScore: z.number().min(0).max(100),
   minHolderCount: z.number().int().min(0),

@@ -6,6 +6,7 @@ import {
 } from '@solana/web3.js';
 import type { Logger } from '../../log.js';
 import type { ChainAdapter, ChainKey, OnchainTokenInfo, HolderStats } from '../../types.js';
+import { analyzeHolderLinkage } from './linkage.js';
 import {
   MINT_ACCOUNT_MIN_SIZE,
   parseMintAccount,
@@ -30,6 +31,35 @@ export class UnknownTxOutcomeError extends Error {
     );
     this.name = 'UnknownTxOutcomeError';
   }
+}
+
+/**
+ * Matemática pura da concentração de holders — exportada para teste.
+ * Base do percentual = supply MENOS as contas excluídas (circulante).
+ */
+export function computeHolderStats(
+  entries: { address: string; raw: bigint }[],
+  supplyRaw: bigint,
+  excludeAccounts: string[] = [],
+): HolderStats | null {
+  const exclude = new Set(excludeAccounts);
+  let excludedRaw = 0n;
+  const held: bigint[] = [];
+  for (const e of entries) {
+    if (exclude.has(e.address)) excludedRaw += e.raw;
+    else held.push(e.raw);
+  }
+  const base = supplyRaw - excludedRaw;
+  if (base <= 0n || held.length === 0) return null;
+
+  held.sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+  const pctOf = (raw: bigint) => Number((raw * 10_000n) / base) / 100;
+  return {
+    top1Pct: pctOf(held[0]!),
+    top10Pct: pctOf(held.slice(0, 10).reduce((a, b) => a + b, 0n)),
+    holderCount: null,
+    source: 'onchain',
+  };
 }
 
 /**
@@ -161,24 +191,38 @@ export class SolanaChain implements ChainAdapter {
    * não sabe o que é AMM). O risco usa o dado do RugCheck quando disponível —
    * este é o fallback, e os limiares do config devem ser mais frouxos por isso.
    */
-  async getTopHolders(mint: string, info: OnchainTokenInfo): Promise<HolderStats | null> {
+  /**
+   * Concentração dos maiores holders. `excludeAccounts` remove contas
+   * ESTRUTURAIS (o vault da bonding curve) e muda a base do percentual para o
+   * supply CIRCULANTE — é o que transforma "a curve tem 90%" (inútil) em
+   * "3 carteiras têm 80% do que circula" (o sinal de sniper que importa).
+   */
+  async getTopHolders(
+    mint: string,
+    info: OnchainTokenInfo,
+    excludeAccounts: string[] = [],
+  ): Promise<HolderStats | null> {
     if (info.supplyRaw <= 0n) return null;
     const res = await this.conn.getTokenLargestAccounts(new PublicKey(mint));
-    const amounts = res.value
-      .map((a) => {
-        try {
-          return BigInt(a.amount);
-        } catch {
-          return 0n;
-        }
-      })
-      .sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
-    if (amounts.length === 0) return null;
+    const entries = res.value.map((a) => {
+      let raw = 0n;
+      try {
+        raw = BigInt(a.amount);
+      } catch {
+        // conta ilegível conta como zero
+      }
+      return { address: a.address.toBase58(), raw };
+    });
+    return computeHolderStats(entries, info.supplyRaw, excludeAccounts);
+  }
 
-    const pctOf = (raw: bigint) => Number((raw * 10_000n) / info.supplyRaw) / 100;
-    const top1Pct = pctOf(amounts[0]!);
-    const top10Pct = pctOf(amounts.slice(0, 10).reduce((a, b) => a + b, 0n));
-    return { top1Pct, top10Pct, holderCount: null, source: 'onchain' };
+  /** Ligação entre carteiras do topo — ver src/chains/solana/linkage.ts. */
+  async getHolderLinkage(
+    mint: string,
+    excludeAccounts: string[],
+    opts: { topN: number; slotTolerance: number },
+  ) {
+    return analyzeHolderLinkage(this.conn, mint, excludeAccounts, opts);
   }
 
   /**

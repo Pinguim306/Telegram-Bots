@@ -1,3 +1,4 @@
+import type { LinkageReport } from './chains/solana/linkage.js';
 import type { RiskConfig } from './config.js';
 import type { HolderStats, OnchainTokenInfo, RugcheckSummary } from './types.js';
 
@@ -21,11 +22,16 @@ export interface RiskInput {
   rugcheck: RugcheckSummary;
   /**
    * true = token ainda na bonding curve (pump.fun). Muda a leitura de holders:
-   * a maior conta É o vault da curve (estrutural, não insider), então as
-   * checagens de concentração não se aplicam. As checagens de mint/freeze/
-   * extensões continuam valendo integralmente — são a defesa real na curve.
+   * `holders` chega com o vault da curve JÁ EXCLUÍDO e percentuais sobre o
+   * supply CIRCULANTE — a concentração é julgada por limiares próprios
+   * (curveMaxTop1Pct/curveMaxTop10Pct), calibrados para essa base menor.
    */
   curve?: boolean;
+  /**
+   * Ligação entre as carteiras do topo (só coletada na curve). null =
+   * indisponível/desligada — fail-open: as demais defesas seguem valendo.
+   */
+  linkage?: LinkageReport | null;
 }
 
 export interface RiskFlag {
@@ -100,10 +106,70 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
 
   // ── holders ─────────────────────────────────────────────────
   // Preferência: dado do RugCheck (exclui vaults de AMM) > leitura crua do RPC.
-  // Na CURVE as checagens de concentração são puladas: a maior conta é o vault
-  // da própria curve, e penalizá-la vetaria todo token pré-graduação.
   const rug = input.rugcheck;
-  if (!input.curve) {
+  if (input.curve) {
+    // CURVE: os percentuais já vêm sobre o CIRCULANTE (vault excluído na
+    // leitura). Concentração alta aqui é sinal REAL de sniper/bundler — era a
+    // checagem que faltava: token com o circulante inteiro em meia dúzia de
+    // carteiras passava sem nenhuma análise de distribuição.
+    const h = input.holders;
+    if (!h) {
+      add('curve_holders_missing', 'medium', 'Distribuição do circulante indisponível', 8);
+    } else {
+      if (h.top10Pct > cfg.curveMaxTop10Pct) {
+        const points = Math.min(45, 25 + (h.top10Pct - cfg.curveMaxTop10Pct));
+        add(
+          'curve_top10_concentrated',
+          'high',
+          `Top 10 carteiras com ${h.top10Pct.toFixed(1)}% do CIRCULANTE (fora da curve)`,
+          points,
+        );
+      } else if (h.top10Pct > cfg.curveMaxTop10Pct * 0.8) {
+        add(
+          'curve_top10_elevated',
+          'low',
+          `Top 10 carteiras com ${h.top10Pct.toFixed(1)}% do circulante`,
+          8,
+        );
+      }
+      if (h.top1Pct > cfg.curveMaxTop1Pct) {
+        const points = Math.min(35, 20 + (h.top1Pct - cfg.curveMaxTop1Pct));
+        add(
+          'curve_top1_concentrated',
+          'high',
+          `Uma carteira com ${h.top1Pct.toFixed(1)}% do circulante`,
+          points,
+        );
+      }
+    }
+
+    // LIGAÇÃO entre carteiras: dez carteiras "diferentes" com 8% cada parecem
+    // distribuição saudável — até se ver que compraram no mesmo bloco ou que
+    // saíram da mesma carteira-mãe. É um sniper só, fatiado.
+    const l = input.linkage ?? null;
+    if (l) {
+      if (l.sameSlotCluster > cfg.maxSameSlotCluster) {
+        // Base acima do maxScore default (40): bundle CONFIRMADO rejeita
+        // sozinho — não é um "sinal a acumular", é o padrão que mais custou.
+        const points = Math.min(50, 41 + 3 * (l.sameSlotCluster - cfg.maxSameSlotCluster));
+        add(
+          'bundle_same_slot',
+          'high',
+          `${l.sameSlotCluster} carteiras do topo compraram no MESMO bloco — bundle de sniper`,
+          points,
+        );
+      }
+      if (l.sharedFunderCluster > cfg.maxSharedFunderCluster) {
+        const points = Math.min(50, 41 + 3 * (l.sharedFunderCluster - cfg.maxSharedFunderCluster));
+        add(
+          'shared_funder',
+          'high',
+          `${l.sharedFunderCluster} carteiras do topo fundadas pela MESMA carteira-mãe`,
+          points,
+        );
+      }
+    }
+  } else {
     const rugTop10 = rug.available ? rug.top10Pct : null;
     const top10 = rugTop10 ?? input.holders?.top10Pct ?? null;
     const top1 = rugTop10 !== null ? null : (input.holders?.top1Pct ?? null);

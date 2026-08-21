@@ -174,6 +174,15 @@ Detalhes de calibração que vieram de dados reais, não de teoria:
 - Top holders lidos do RPC incluem os vaults dos pools (o RPC não sabe o que é AMM). O
   dado do RugCheck, que marca contas conhecidas de AMM, tem preferência; o do RPC é
   fallback com limiar generoso.
+- **Token na bonding curve**: a concentração é medida sobre o supply **circulante** — o
+  vault da curve é excluído da conta (`curveMaxTop1Pct`/`curveMaxTop10Pct`). Sem isso a
+  checagem era pulada por inteiro e token com o circulante todo em meia dúzia de
+  carteiras passava sem análise de distribuição.
+- **Ligação entre carteiras** (`linkage*`): dez carteiras "diferentes" com 8% cada
+  parecem distribuição saudável — até se ver que compraram no **mesmo bloco** (bundle)
+  ou foram fundadas pela **mesma carteira-mãe** (fee payer da primeira transação de cada
+  uma). Os dois sinais são lidos on-chain (~20–30 chamadas de RPC, só no último degrau
+  do funil, com timeout e fail-open) e pontuam alto o suficiente para rejeitar sozinhos.
 
 ### 5. Segunda opinião da IA (config `ai`) — opcional
 

@@ -1,4 +1,5 @@
 import { PublicKey, type Connection } from '@solana/web3.js';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from './mint.js';
 
 /**
  * Bonding curve do pump.fun lida DIRETO da conta on-chain, com a matemática
@@ -51,6 +52,25 @@ export function parseCurveAccount(data: Buffer): CurveState | null {
     realSolReserves: data.readBigUInt64LE(32),
     complete: data.readUInt8(48) !== 0,
   };
+}
+
+const ATA_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+
+/**
+ * Conta de TOKEN do vault da bonding curve (a ATA do curve PDA) — é onde fica
+ * o supply ainda não vendido. A análise de concentração de holders EXCLUI esta
+ * conta e mede sobre o circulante: sem isso, "maior holder com 90%" era sempre
+ * a própria curve e a checagem inteira era pulada — deixando passar token com
+ * o circulante inteiro na mão de meia dúzia de snipers.
+ */
+export function curveTokenAccount(mint: string, token2022: boolean): PublicKey {
+  const owner = curveAddress(mint);
+  const tokenProgram = new PublicKey(token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID);
+  const [ata] = PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), tokenProgram.toBuffer(), new PublicKey(mint).toBuffer()],
+    ATA_PROGRAM_ID,
+  );
+  return ata;
 }
 
 /** Lê o estado da curve de um mint. null = conta não existe ou ilegível. */

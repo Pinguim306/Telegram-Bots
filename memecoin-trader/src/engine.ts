@@ -1,6 +1,8 @@
 import type { Advisor } from './advisor.js';
 import { NoBalanceError } from './brokers.js';
 import { UnknownTxOutcomeError } from './chains/solana/index.js';
+import type { LinkageReport } from './chains/solana/linkage.js';
+import { curveTokenAccount } from './chains/solana/pumpcurve.js';
 import type { TraderConfig } from './config.js';
 import {
   applySellFill,
@@ -97,8 +99,20 @@ export function cachedSource<T>(
 export interface TokenAnalysis {
   onchain: OnchainTokenInfo | null;
   holders: HolderStats | null;
+  linkage: LinkageReport | null;
   rugcheck: RugcheckSummary;
   report: RiskReport;
+}
+
+/** Corrida contra o relógio que NUNCA rejeita — timeout vira null (fail-open). */
+function withTimeoutNull<T>(promise: Promise<T | null>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise.catch(() => null),
+    new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), ms);
+      timer.unref?.();
+    }),
+  ]);
 }
 
 
@@ -752,19 +766,57 @@ export class TraderEngine {
 
   /**
    * Análise completa de segurança de um token. Também usada pelo `check` do CLI.
-   * `curve` = token ainda na bonding curve: pula a leitura de top holders (a
-   * maior conta seria o vault da curve — RPC gasto para um dado sem sentido).
+   * `curve` = token ainda na bonding curve: a leitura de top holders EXCLUI o
+   * vault da curve e mede a concentração sobre o CIRCULANTE — antes ela era
+   * pulada por inteiro, e token com o circulante todo na mão de snipers passava
+   * sem nenhuma checagem de distribuição (visto nos trades reais).
    */
   async analyzeToken(mint: string, curve = false): Promise<TokenAnalysis> {
     const onchain = await this.chain.getOnchainTokenInfo(mint).catch((err: Error) => {
       this.log.warn({ mint, err: err.message }, 'Leitura on-chain falhou');
       return null;
     });
-    const holders =
-      onchain && !curve ? await this.chain.getTopHolders(mint, onchain).catch(() => null) : null;
+    const holders = onchain
+      ? await this.chain
+          .getTopHolders(
+            mint,
+            onchain,
+            curve ? [curveTokenAccount(mint, onchain.token2022).toBase58()] : [],
+          )
+          .catch(() => null)
+      : null;
+    // Ligação entre carteiras do topo — só na curve (é onde mora o bundle) e
+    // só como ÚLTIMO custo do funil: ~20-30 chamadas de RPC. Timeout de 12s
+    // vira null — a análise nunca segura o tick.
+    const linkage =
+      curve && this.cfg.risk.linkageEnabled && this.chain.getHolderLinkage
+        ? await withTimeoutNull(
+            this.chain.getHolderLinkage(
+              mint,
+              onchain ? [curveTokenAccount(mint, onchain.token2022).toBase58()] : [],
+              {
+                topN: this.cfg.risk.linkageTopN,
+                slotTolerance: this.cfg.risk.linkageSlotTolerance,
+              },
+            ),
+            12_000,
+          )
+        : null;
+    if (linkage && (linkage.sameSlotCluster > 1 || linkage.sharedFunderCluster > 1)) {
+      this.log.info(
+        {
+          mint,
+          carteirasChecadas: linkage.checkedWallets,
+          mesmoBloco: linkage.sameSlotCluster,
+          mesmaMae: linkage.sharedFunderCluster,
+          recemCriadas: linkage.freshWallets,
+        },
+        'Ligação entre carteiras do topo',
+      );
+    }
     const rugcheck = await this.sources.rugcheck(mint);
-    const report = assessRisk({ onchain, holders, rugcheck, curve }, this.cfg.risk);
-    return { onchain, holders, rugcheck, report };
+    const report = assessRisk({ onchain, holders, rugcheck, curve, linkage }, this.cfg.risk);
+    return { onchain, holders, linkage, rugcheck, report };
   }
 
   private async tryEnter(

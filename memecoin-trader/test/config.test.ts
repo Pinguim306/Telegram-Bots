@@ -78,6 +78,23 @@ describe('config/trader.json', () => {
     expect(parsed.dashboard.port).toBe(3877);
   });
 
+  it('análise de holders da curve e de ligação de carteiras: coerente e com defaults', () => {
+    expect(cfg.risk.curveMaxTop10Pct).toBeGreaterThan(cfg.risk.curveMaxTop1Pct);
+    expect(cfg.risk.linkageTopN).toBeGreaterThanOrEqual(3);
+    // Config antigo (sem os campos novos) continua válido via defaults.
+    const raw = JSON.parse(JSON.stringify(cfg)) as { risk: Record<string, unknown> };
+    delete raw.risk.curveMaxTop1Pct;
+    delete raw.risk.curveMaxTop10Pct;
+    delete raw.risk.linkageEnabled;
+    delete raw.risk.linkageTopN;
+    delete raw.risk.linkageSlotTolerance;
+    delete raw.risk.maxSameSlotCluster;
+    delete raw.risk.maxSharedFunderCluster;
+    const parsed = traderFileSchema.parse(raw);
+    expect(parsed.risk.linkageEnabled).toBe(true);
+    expect(parsed.risk.curveMaxTop10Pct).toBe(70);
+  });
+
   it('as travas de segurança default estão ligadas', () => {
     expect(cfg.risk.vetoFreezeAuthority).toBe(true);
     expect(cfg.risk.vetoMintAuthority).toBe(true);

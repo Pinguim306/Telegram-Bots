@@ -91,7 +91,7 @@ O candidato que você recebe JÁ passou por gates quantitativos (liquidez, volum
 3. COERÊNCIA: idade × market cap × volume × holders contam uma história plausível para a faixa configurada?
 4. ASSIMETRIA: no preço atual, ainda existe espaço realista para +${cfg.exit.takeProfitPct}% antes da multidão sair?
 
-Atenção em token de bonding curve: o percentual do top 10 holders costuma INCLUIR o vault da própria curve — concentração alta ali não é, por si só, insider.
+Atenção em token de bonding curve: o percentual do top 10 holders é sobre o supply CIRCULANTE (o vault da curve já foi excluído da conta) — concentração alta aqui é sinal REAL de sniper/bundler, e as flags de risco podem trazer evidência de ligação entre carteiras (compra no mesmo bloco, mesma carteira-mãe). Trate essas flags com peso máximo.
 
 Seja seletivo: pular custa pouco (sempre haverá outro candidato em minutos); comprar tarde custa o stop. Em dúvida real, pule com confiança baixa. Responda APENAS no formato estruturado pedido, com reason curta em português.`;
 }
@@ -121,7 +121,7 @@ export function buildBrief(input: AdvisorInput): string {
     holders: input.holderCount ?? 'desconhecido',
     top10Pct:
       input.top10Pct !== null
-        ? `${input.top10Pct}${input.curve ? ' (pode incluir o vault da bonding curve)' : ''}`
+        ? `${input.top10Pct}${input.curve ? ' (% do circulante, vault da curve excluído)' : ''}`
         : 'desconhecido',
     lpLockedPct: input.lpLockedPct ?? 'desconhecido',
   };

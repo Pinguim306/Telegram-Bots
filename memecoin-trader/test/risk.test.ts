@@ -128,19 +128,85 @@ describe('assessRisk', () => {
     expect(report.flags.some((f) => f.id === 'top10_concentrated')).toBe(true);
   });
 
-  it('bonding curve: concentração de holders não se aplica — a "maior conta" é o vault da curve', () => {
+  it('curve: circulante concentrado (vault já excluído) REJEITA — era o buraco que deixava bundle passar', () => {
     const report = assessRisk(
       input({
         curve: true,
         rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
-        holders: { top1Pct: 85, top10Pct: 97, holderCount: null, source: 'onchain' },
+        // Percentuais sobre o CIRCULANTE: uma carteira com 45%, top10 com 88%.
+        holders: { top1Pct: 45, top10Pct: 88, holderCount: null, source: 'onchain' },
+      }),
+      cfg,
+    );
+    expect(report.verdict).toBe('rejected');
+    expect(report.flags.some((f) => f.id === 'curve_top10_concentrated')).toBe(true);
+    expect(report.flags.some((f) => f.id === 'curve_top1_concentrated')).toBe(true);
+  });
+
+  it('curve: circulante razoavelmente distribuído passa — early buyers dominarem um pouco é normal', () => {
+    const report = assessRisk(
+      input({
+        curve: true,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+        holders: { top1Pct: 12, top10Pct: 48, holderCount: null, source: 'onchain' },
       }),
       cfg,
     );
     expect(report.verdict).toBe('approved');
-    expect(
-      report.flags.filter((f) => f.id.startsWith('top') || f.id === 'holders_missing'),
-    ).toHaveLength(0);
+    expect(report.flags.filter((f) => f.id.startsWith('curve_top'))).toHaveLength(0);
+  });
+
+  it('curve sem leitura de holders pontua leve — dado faltando nunca é dado bom', () => {
+    const report = assessRisk(
+      input({
+        curve: true,
+        holders: null,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+      }),
+      cfg,
+    );
+    expect(report.flags.some((f) => f.id === 'curve_holders_missing')).toBe(true);
+    expect(report.verdict).toBe('approved');
+  });
+
+  it('curve: carteiras compradas no MESMO bloco (bundle) rejeitam mesmo com concentração ok', () => {
+    const report = assessRisk(
+      input({
+        curve: true,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+        holders: { top1Pct: 9, top10Pct: 55, holderCount: null, source: 'onchain' },
+        linkage: { checkedWallets: 10, sameSlotCluster: 6, sharedFunderCluster: 1, freshWallets: 8 },
+      }),
+      cfg,
+    );
+    expect(report.verdict).toBe('rejected');
+    expect(report.flags.some((f) => f.id === 'bundle_same_slot')).toBe(true);
+  });
+
+  it('curve: carteiras com a mesma carteira-mãe rejeitam; ligação fraca não pontua', () => {
+    const linked = assessRisk(
+      input({
+        curve: true,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+        holders: { top1Pct: 9, top10Pct: 55, holderCount: null, source: 'onchain' },
+        linkage: { checkedWallets: 10, sameSlotCluster: 2, sharedFunderCluster: 5, freshWallets: 7 },
+      }),
+      cfg,
+    );
+    expect(linked.verdict).toBe('rejected');
+    expect(linked.flags.some((f) => f.id === 'shared_funder')).toBe(true);
+
+    const ok = assessRisk(
+      input({
+        curve: true,
+        rugcheck: { ...cleanRugcheck, top10Pct: null, holderCount: null },
+        holders: { top1Pct: 9, top10Pct: 55, holderCount: null, source: 'onchain' },
+        linkage: { checkedWallets: 10, sameSlotCluster: 2, sharedFunderCluster: 2, freshWallets: 3 },
+      }),
+      cfg,
+    );
+    expect(ok.flags.filter((f) => f.id === 'bundle_same_slot' || f.id === 'shared_funder')).toHaveLength(0);
+    expect(ok.verdict).toBe('approved');
   });
 
   it('na curve, mint/freeze/extensões continuam vetando — são a defesa real', () => {
