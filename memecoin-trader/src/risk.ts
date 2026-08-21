@@ -182,7 +182,16 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
     const top1 = rugTop10 !== null ? null : (input.holders?.top1Pct ?? null);
 
     if (top10 === null) {
-      add('holders_missing', 'medium', 'Distribuição de holders indisponível', 10);
+      // O mesmo princípio da curve, aplicado UNIFORME: comprar sem conseguir
+      // verificar a distribuição é comprar às cegas. Medido em produção: um
+      // token da flap.sh (que reporta liquidez e por isso NÃO é curve para os
+      // gates) passou por aqui com "distribuição indisponível" — o furo exato
+      // que requireHolderDistribution existia para fechar.
+      if (cfg.requireHolderDistribution) {
+        add('holders_missing', 'veto', 'Distribuição de holders indisponível', 0);
+      } else {
+        add('holders_missing', 'medium', 'Distribuição de holders indisponível', 10);
+      }
     } else {
       if (top10 > cfg.maxTop10Pct) {
         // Escala com o excesso: 55% concentrado é ruim, 85% é outra categoria de

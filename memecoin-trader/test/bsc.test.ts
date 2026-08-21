@@ -292,8 +292,15 @@ describe('GoPlus → RugcheckSummary', () => {
 
   it('análise SEM honeypot e SEM taxas é marcada como parcial e pontua no risco', () => {
     // O caso real dos tokens novos de curve: a fonte responde, mas sem nenhum
-    // dos dois sinais que decidem na BSC. Não é aprovação.
-    const shallow = mapGoPlusToken({ is_open_source: '1', buy_tax: '', sell_tax: '' });
+    // dos dois sinais que decidem na BSC. Não é aprovação. A distribuição vem
+    // preenchida para isolar a flag — sem ela o veto agora é OUTRO
+    // (holders_missing, via requireHolderDistribution).
+    const shallow = mapGoPlusToken({
+      is_open_source: '1',
+      buy_tax: '',
+      sell_tax: '',
+      holders: [{ address: '0xaaa1', percent: '0.08' }, { address: '0xaaa2', percent: '0.05' }],
+    });
     if (!shallow.available) throw new Error('esperava available');
     expect(shallow.shallow).toBe(true);
 

@@ -407,10 +407,22 @@ O que muda de mundo na BSC:
   top1 do circulante vai de 15% a 96%: aí separa token distribuído de token bundlado.
   Na EVM não dá para listar holders pelo RPC sem indexar `Transfer`, então a lista vem
   do próprio GoPlus.
-- `requireHolderDistribution: true` no config da BSC: token de curve cuja distribuição
-  **não pôde ser verificada** é rejeitado, em vez de só pontuar. O GoPlus ainda não
-  computou os holders dos tokens mais novos — justamente onde o bundle é mais provável.
-  Na Solana o default é `false` (lá a distribuição vem do RPC e faltar é raro).
+- `requireHolderDistribution: true` no config da BSC: token cuja distribuição **não
+  pôde ser verificada** é rejeitado, em vez de só pontuar — na curve E fora dela.
+  A regra virou uniforme depois de um caso real: um token da flap.sh (que reporta
+  liquidez e por isso não é "curve" para os gates) passou aprovado com distribuição
+  indisponível. Na Solana o default é `false` (lá a distribuição vem do RPC e faltar
+  é raro).
+- **A flap.sh tem fonte própria** (`discovery.flapsh`), porque ninguém a indexa
+  direito — o GeckoTerminal não a lista como dex. Duas pernas independentes:
+  o **board do próprio site** (engenharia reversa: `/v3/board` no backend da BSC,
+  categorias `trending` e `graduating_hot` — esta entrega a população-alvo em estado
+  puro: medido, 20 de 20 tokens ainda na curve, progress 32–48%) e a **busca do
+  DexScreener** por `flapsh` (snapshot completo, segura a descoberta quando o board
+  responde 429). Bônus do board: as **taxas do contrato** (buy/sell em bps), que o
+  GoPlus não computou para token novo — elas são fundidas no relatório de segurança
+  (só preenchem o que falta, nunca sobrescrevem o que o GoPlus mediu) e alimentam o
+  teto `maxSellTaxPct`.
 - Os campos `*Sol` do config/banco valem como "moeda NATIVA" (BNB na BSC).
 - **Live na BSC é a fase 2** (PancakeSwap router, approve, nonce).
 

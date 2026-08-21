@@ -774,7 +774,7 @@ export class TraderEngine {
     const tasks: Promise<Candidate[]>[] = [];
     if (d.pumpportal.enabled) tasks.push(this.sources.pumpportal());
     // Plataformas específicas primeiro (é a população que a estratégia caça).
-    if (d.gtDexes.length > 0) tasks.push(this.sources.dexPools());
+    if (d.gtDexes.length > 0 || d.flapsh) tasks.push(this.sources.dexPools());
     if (d.geckoTrending) tasks.push(this.sources.trending());
     if (d.geckoNew) tasks.push(this.sources.newPools());
     if (d.dexscreenerBoosts) tasks.push(this.sources.boosts());
