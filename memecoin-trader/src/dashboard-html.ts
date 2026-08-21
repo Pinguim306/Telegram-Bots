@@ -75,6 +75,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div class="card"><div class="label">Saldo</div><div class="value" id="balance">…</div></div>
     <div class="card"><div class="label">SOL/USD</div><div class="value" id="solusd">…</div></div>
     <div class="card"><div class="label">PnL hoje (UTC)</div><div class="value" id="dailyPnl">…</div></div>
+    <div class="card"><div class="label">Aberto (não realizado)</div><div class="value" id="unrealized">…</div></div>
     <div class="card"><div class="label">Trades hoje</div><div class="value" id="dailyTrades">…</div></div>
     <div class="card"><div class="label">Posições abertas</div><div class="value" id="openCount">…</div></div>
   </div>
@@ -179,6 +180,10 @@ async function refresh() {
   const pnl = $('dailyPnl');
   pnl.textContent = fmtSol(o.daily.realizedPnlSol) + ' SOL';
   pnl.className = 'value ' + (o.daily.realizedPnlSol >= 0 ? 'pos' : 'neg');
+  const unreal = $('unrealized');
+  const u = o.unrealizedSol ?? 0;
+  unreal.textContent = fmtSol(u) + ' SOL';
+  unreal.className = 'value ' + (u >= 0 ? 'pos' : 'neg');
   $('dailyTrades').textContent = o.daily.trades + ' (' + o.daily.wins + 'W/' + o.daily.losses + 'L)';
   $('openCount').textContent = o.open.length;
 

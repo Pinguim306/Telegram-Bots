@@ -1,5 +1,5 @@
 {
-  "$comment": "Perfil BSC (TRADER_CHAIN=bsc) — FASE 1: paper apenas. Memecoins da PancakeSwap com momentum. Diferenças de mundo vs Solana: bloco de ~3s (scalp mais lento), honeypot/taxas de contrato são a norma (GoPlus obrigatório: requireRugcheck=true), liquidez e mcap vivem numa escala maior. Calibração inicial conservadora — ajuste pelo painel (porta 3878) com dados do paper.",
+  "$comment": "Perfil BSC (TRADER_CHAIN=bsc) — FASE 1: paper apenas. SÓ bonding curve: four.meme (dexId fourmeme) e flap.sh (dexId flapsh). Calibrado contra a distribuição REAL dessas duas plataformas (amostra de 51 pares): fourmeme não reporta liquidez (é curve pura, mcap mediano ~$11k); flapsh reporta ~$8k de liquidez com mcap ~$3,7k. ATENÇÃO: nesses tokens o GoPlus quase sempre NÃO computa honeypot nem taxas (10/10 na amostra) — a flag seguranca_parcial marca isso e o teto de posição é pequeno de propósito. Ajuste pelo painel (porta 3878).",
   "loop": {
     "tickSec": 15,
     "candidatesPerTick": 3,
@@ -16,6 +16,9 @@
       "watchWindowMin": 90,
       "incubationMin": 5
     },
+    "gtDexes": [
+      "four-meme"
+    ],
     "sourceTtlSec": 60,
     "maxCandidatesPerTick": 200,
     "excludeMints": [
@@ -31,21 +34,24 @@
   "entry": {
     "gates": {
       "allowedDexIds": [
-        "pancakeswap"
+        "fourmeme",
+        "flapsh"
       ],
-      "curveDexIds": [],
-      "minLiquidityUsd": 15000,
-      "maxLiquidityUsd": 300000,
-      "minVolume1hUsd": 5000,
-      "minAgeMin": 10,
-      "maxAgeHours": 48,
-      "minTxns1h": 60,
+      "curveDexIds": [
+        "fourmeme"
+      ],
+      "minLiquidityUsd": 5000,
+      "maxLiquidityUsd": 100000,
+      "minVolume1hUsd": 300,
+      "minAgeMin": 5,
+      "maxAgeHours": 12,
+      "minTxns1h": 10,
       "minBuyRatio1h": 0.55,
       "maxDrop5mPct": 15,
-      "minMarketCapUsd": 20000,
-      "maxMarketCapUsd": 300000,
-      "minVolumePaceUsdPerMin": 300,
-      "minTxnsPerMin": 2
+      "minMarketCapUsd": 3000,
+      "maxMarketCapUsd": 50000,
+      "minVolumePaceUsdPerMin": 30,
+      "minTxnsPerMin": 0.5
     },
     "minScore": 55,
     "rules": [
@@ -79,7 +85,7 @@
         "points": 20,
         "params": {
           "minRatio": 0.55,
-          "minBuys": 50
+          "minBuys": 20
         }
       },
       {
@@ -110,6 +116,7 @@
     "maxTop10Pct": 60,
     "curveMaxTop1Pct": 30,
     "curveMaxTop10Pct": 70,
+    "requireHolderDistribution": true,
     "linkageEnabled": false,
     "linkageTopN": 10,
     "linkageSlotTolerance": 2,
@@ -118,7 +125,7 @@
     "maxSellTaxPct": 10,
     "minLpLockedPct": 60,
     "maxRugcheckScore": 60,
-    "minHolderCount": 100,
+    "minHolderCount": 30,
     "rugcheckTimeoutMs": 8000
   },
   "sizing": {

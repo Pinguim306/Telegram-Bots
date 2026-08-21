@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PaperBroker } from '../src/brokers.js';
+import { NoBalanceError, PaperBroker } from '../src/brokers.js';
 import { loadTraderConfig } from '../src/config.js';
 import { getDailyStats, listClosedPositions, listOpenPositions, openTraderDb, type Db } from '../src/db.js';
 import type { Advisor, AdvisorVerdict } from '../src/advisor.js';
@@ -111,6 +111,18 @@ class MarkSpyBroker extends PaperBroker {
   }
 }
 
+/** PaperBroker cujas VENDAS sempre falham — exercita o watchdog de posição presa. */
+class FailingSellBroker extends PaperBroker {
+  failures = 0;
+  /** Depois de N falhas, passa a lançar NoBalanceError (carteira esvaziada por fora). */
+  noBalanceAfter = Number.POSITIVE_INFINITY;
+  override async sell(...args: Parameters<PaperBroker['sell']>): Promise<never> {
+    this.failures++;
+    if (this.failures > this.noBalanceAfter) throw new NoBalanceError(args[0]);
+    throw new Error('rota congestionada');
+  }
+}
+
 /** Advisor de teste: devolve sempre o mesmo veredito (ou null = IA fora do ar). */
 class FakeAdvisor implements Advisor {
   calls = 0;
@@ -139,6 +151,7 @@ function fakeSources(state: { snap: PairSnapshot | null }): Sources {
     trending: async (): Promise<Candidate[]> => [{ mint: MINT, symbol: 'PUMP', sources: ['gt-trending'] }],
     newPools: async () => [],
     boosts: async () => [],
+    dexPools: async () => [],
     pairs: async (mints) => {
       const map = new Map<string, PairSnapshot>();
       if (state.snap && mints.includes(MINT)) map.set(MINT, state.snap);
@@ -512,6 +525,124 @@ describe('TraderEngine', () => {
     }
     expect(broker.attempts.map((a) => a.portion)).toEqual([100, 100, 100, 50]);
     expect(broker.attempts[3]!.urgent).toBe(true);
+  });
+
+  it('posição presa: após escalar para tranche, NoBalanceError ainda reconcilia e fecha', async () => {
+    // Regressão: o watchdog passava a tranche de 50% para handleSellFailure, e
+    // a guarda "portionPct >= 100" nunca mais era verdadeira — a posição-zumbi
+    // ficava aberta para sempre, ocupando slot e escondendo a perda.
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new FailingSellBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    // Compra com um broker que vende normalmente...
+    const buyer = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const buyEngine = new TraderEngine(cfg, db, buyer, new FakeChain(), fakeSources(state), log);
+    await buyEngine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+
+    // ...e agora as vendas passam a falhar, com o preço no stop loss.
+    state.snap = snap({ priceUsd: entryPrice * 0.5 });
+    // 3 falhas comuns escalam o watchdog para tranche de 50%.
+    for (let i = 1; i <= 3; i++) await engine.tick(T0 + i * 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+
+    // A carteira é esvaziada por fora: a venda seguinte devolve NoBalanceError.
+    broker.noBalanceAfter = broker.failures;
+    await engine.tick(T0 + 240);
+
+    // A reconciliação TEM que fechar mesmo com o watchdog em tranche de 50%.
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    const closed = listClosedPositions(db, 'paper')[0]!;
+    expect(closed.exitReason).toContain('reconciliado');
+  });
+
+  it('PnL não-realizado: venda parcial não vira buraco fantasma no circuit breaker', async () => {
+    // Regressão: openUnrealizedSol comparava a marca do RESTANTE com o custo
+    // TOTAL, ignorando o SOL já recebido — uma posição lucrativa parcialmente
+    // vendida lia como buraco e desligava as compras do dia.
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new MarkSpyBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    const pos = listOpenPositions(db, 'paper')[0]!;
+    await engine.manualSell(MINT, 50); // realiza metade
+
+    const after = listOpenPositions(db, 'paper')[0]!;
+    expect(after.solReceived).toBeGreaterThan(0);
+
+    // Marca do restante ≈ metade do custo. Com o solReceived somado, a posição
+    // está perto do zero a zero; sem ele (o bug), leria ~-50% do custo total.
+    broker.markSol = pos.solSpent / 2;
+    await engine.tick(T0 + 30);
+    expect(engine.unrealizedSol).toBeCloseTo(
+      pos.solSpent / 2 + after.solReceived - pos.solSpent,
+      6,
+    );
+    expect(engine.unrealizedSol).toBeGreaterThan(-pos.solSpent / 4);
+  });
+
+  it('perda fechada no tick não conta duas vezes no PnL não-realizado', async () => {
+    // Regressão: a posição fechada durante o laço mantinha o não-realizado no
+    // acumulador enquanto o realizado já entrava na estatística diária — a
+    // trava diária disparava com metade do drawdown configurado.
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+
+    // Crash: a posição fecha por stop loss DENTRO deste tick.
+    state.snap = snap({ priceUsd: entryPrice * 0.5 });
+    await engine.tick(T0 + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    // Nada aberto ⇒ não-realizado tem que ser exatamente zero.
+    expect(engine.unrealizedSol).toBe(0);
+  });
+
+  it('token sem snapshot mas com marca NÃO é liquidado como "token morto"', async () => {
+    // Regressão: o snapshot sintético fabrica vol5m/txns em zero, que
+    // satisfaziam a condição de "morto" trivialmente — 45s depois a posição
+    // era vendida com dado que nunca foi observado.
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new MarkSpyBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    const pos = listOpenPositions(db, 'paper')[0]!;
+    const solUsd = 200;
+    // Marca saudável e ESTÁVEL: nada de stop, nada de take profit.
+    broker.markSol = (pos.entryPriceUsd * pos.tokensQty) / solUsd;
+    await engine.tick(T0 + 15); // baseline
+
+    // O indexador some, mas a marca continua boa.
+    state.snap = null;
+    const afterGrace = T0 + (cfg.exit.deadMinHoldMin + 1) * 60;
+    for (let i = 0; i < cfg.exit.deadTicksToExit + 2; i++) {
+      await engine.tick(afterGrace + i * 15);
+    }
+    const aberta = listOpenPositions(db, 'paper');
+    expect(aberta).toHaveLength(1);
+    expect(aberta[0]!.deadTicks).toBe(0);
+  });
+
+  it('rejeição por RISCO aparece no funil do tick', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const sources = fakeSources(state);
+    sources.rugcheck = async () => ({
+      ...cleanRugcheck,
+      dangerFlags: ['Freeze Authority still enabled'],
+    });
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), sources, log);
+
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    // Antes, a camada de risco inteira era invisível no funil.
+    expect(engine.lastTick!.gateTally['risco']).toBe(1);
   });
 
   it('fechar por tempo máximo re-arma o cooldown — sem recompra no MESMO tick', async () => {

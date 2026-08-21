@@ -51,6 +51,7 @@ const emptySources: Sources = {
   trending: async () => [],
   newPools: async () => [],
   boosts: async () => [],
+  dexPools: async () => [],
   pairs: async () => new Map<string, PairSnapshot>(),
   rugcheck: async (): Promise<RugcheckSummary> => ({ available: false, reason: 'teste' }),
   solPriceUsd: async () => 200,

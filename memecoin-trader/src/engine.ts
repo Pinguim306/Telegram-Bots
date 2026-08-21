@@ -2,7 +2,6 @@ import type { Advisor } from './advisor.js';
 import { NoBalanceError } from './brokers.js';
 import { UnknownTxOutcomeError } from './chains/solana/index.js';
 import type { LinkageReport } from './chains/solana/linkage.js';
-import { curveTokenAccount } from './chains/solana/pumpcurve.js';
 import type { TraderConfig } from './config.js';
 import {
   applySellFill,
@@ -63,6 +62,8 @@ export interface Sources {
   trending(): Promise<Candidate[]>;
   newPools(): Promise<Candidate[]>;
   boosts(): Promise<Candidate[]>;
+  /** Pools das plataformas de `discovery.gtDexes` (ex.: four-meme na BSC). */
+  dexPools(): Promise<Candidate[]>;
   pairs(mints: string[]): Promise<Map<string, PairSnapshot>>;
   rugcheck(mint: string): Promise<RugcheckSummary>;
   solPriceUsd(): Promise<number | null>;
@@ -76,11 +77,11 @@ export interface Sources {
  * propagar o erro: candidato de 1 minuto atrás é melhor que nenhum.
  */
 export function cachedSource<T>(
-  fn: () => Promise<T[]>,
+  fn: () => Promise<T>,
   ttlMs: number,
   now: () => number = () => Date.now(),
-): () => Promise<T[]> {
-  let last: T[] | null = null;
+): () => Promise<T> {
+  let last: T | null = null;
   let lastAt = 0;
   return async () => {
     if (ttlMs > 0 && last !== null && now() - lastAt < ttlMs) return last;
@@ -163,6 +164,15 @@ export class TraderEngine {
 
   stop(): void {
     this.stopped = true;
+  }
+
+  /**
+   * PnL NÃO-realizado das posições abertas, pela marca executável. Alimenta o
+   * circuit breaker e agora também o painel — era calculado a cada tick e
+   * nunca exibido, então um buraco aberto ficava invisível para o operador.
+   */
+  get unrealizedSol(): number {
+    return this.openUnrealizedSol;
   }
 
   /** Pausa NOVAS entradas (painel web). A gestão das posições abertas continua. */
@@ -269,6 +279,13 @@ export class TraderEngine {
     this.openUnrealizedSol = 0;
     if (open.length === 0) return;
 
+    // Contribuição de cada posição para o PnL não-realizado, consolidada só no
+    // FIM do laço e apenas sobre o que continuar aberto. Somar direto num
+    // acumulador contava DUAS vezes a posição que fechasse durante o próprio
+    // laço: o não-realizado dela ficava no total e o realizado já entrava na
+    // estatística diária — a trava diária disparava com metade do drawdown.
+    const unrealized = new Map<number, number>();
+
     let snaps: Map<string, PairSnapshot>;
     try {
       snaps = await this.sources.pairs(open.map((p) => p.mint));
@@ -291,6 +308,20 @@ export class TraderEngine {
       // segue por ele).
       const markSol = await this.broker.markValueSol(pos.mint, pos.tokensQty).catch(() => null);
       let effSnap = snap;
+
+      // PnL não-realizado desta posição, ANTES de qualquer `continue`: o tick
+      // de baseline também precisa contar, senão a posição fica um tick
+      // invisível para o circuit breaker. `solReceived` (vendas PARCIAIS já
+      // realizadas) entra na conta — sem ele, uma posição lucrativa que vendeu
+      // metade lia como buraco (custo total contra o valor de metade) e o
+      // buraco fantasma desligava as compras do dia inteiro.
+      const snapPriceSol =
+        snap !== null && solUsd > 0 ? (snap.priceUsd * pos.tokensQty) / solUsd : null;
+      const valueSol = markSol !== null && markSol > 0 ? markSol : snapPriceSol;
+      if (valueSol !== null) {
+        unrealized.set(pos.id, valueSol + pos.solReceived - pos.solSpent);
+      }
+
       if (markSol !== null && markSol > 0 && pos.tokensQty > 0 && solUsd > 0) {
         const markPriceUsd = (markSol * solUsd) / pos.tokensQty;
         effSnap = effSnap
@@ -321,25 +352,22 @@ export class TraderEngine {
 
       const tickPrice = effSnap?.priceUsd ?? null;
 
-      // PnL não-realizado desta posição, pela marca quando há, senão pelo
-      // preço do tick — soma no total que o circuit breaker enxerga.
-      if (markSol !== null && markSol > 0) {
-        this.openUnrealizedSol += markSol - pos.solSpent;
-      } else if (tickPrice !== null && solUsd > 0) {
-        this.openUnrealizedSol += (tickPrice * pos.tokensQty) / solUsd - pos.solSpent;
-      }
-
       // Mercado MORTO: volume e transações de 5m ~zero. O engine só CONTA os
       // ticks seguidos (com carência pós-compra — a janela de 5m do indexador
       // ainda contém o hype da entrada); a decisão de sair é do evaluateExit.
       // Visto em produção: compra pós-dump e o token congelou no chão — sem
       // uma transação sequer, o stop loss nunca dispararia.
+      // Exige o snapshot REAL do indexador (`snap`), nunca o sintético: quando
+      // o indexador falha mas a marca funciona, effSnap vira syntheticSnap com
+      // vol5m/txns FABRICADOS em zero — que satisfazem esta condição
+      // trivialmente e liquidariam em 45s uma posição com volume de verdade.
+      // Dado que nunca foi observado não pode virar sinal de venda.
       const exitCfg = this.cfg.exit;
       const isDead =
-        effSnap !== null &&
+        snap !== null &&
         (nowTs - pos.entryTs) / 60 >= exitCfg.deadMinHoldMin &&
-        effSnap.vol5mUsd < exitCfg.deadVolume5mUsd &&
-        effSnap.buys5m + effSnap.sells5m <= exitCfg.deadTxns5m;
+        snap.vol5mUsd < exitCfg.deadVolume5mUsd &&
+        snap.buys5m + snap.sells5m <= exitCfg.deadTxns5m;
       const deadTicks = isDead ? pos.deadTicks + 1 : 0;
 
       if (tickPrice !== null) {
@@ -394,6 +422,14 @@ export class TraderEngine {
         nowTs,
         decision.urgent,
       );
+    }
+
+    // Consolida só o que continua ABERTO: posição fechada durante o laço já
+    // virou PnL realizado na estatística diária e não pode contar de novo aqui.
+    const stillOpen = new Set(listOpenPositions(this.db, this.broker.mode).map((p) => p.id));
+    this.openUnrealizedSol = 0;
+    for (const [id, value] of unrealized) {
+      if (stillOpen.has(id)) this.openUnrealizedSol += value;
     }
   }
 
@@ -493,7 +529,12 @@ export class TraderEngine {
           'POSIÇÃO PRESA: 6+ vendas falhadas seguidas — verifique o token no explorer; o bot segue tentando em tranches',
         );
       }
-      await this.handleSellFailure(fresh, effPortion, snap, solUsd, reason, nowTs, err as Error);
+      // `portionPct` (a INTENÇÃO original), não `effPortion`: a reconciliação
+      // de posição-zumbi exige "isto era uma saída total". Passar a tranche de
+      // 50% do watchdog desligava exatamente a reconciliação que ele deveria
+      // destravar — a posição ficava aberta para sempre, ocupando slot e
+      // escondendo a perda do circuit breaker.
+      await this.handleSellFailure(fresh, portionPct, snap, solUsd, reason, nowTs, err as Error);
     }
   }
 
@@ -731,6 +772,8 @@ export class TraderEngine {
     // graduado não pode ser o cortado em favor de um trending genérico.
     const tasks: Promise<Candidate[]>[] = [];
     if (d.pumpportal.enabled) tasks.push(this.sources.pumpportal());
+    // Plataformas específicas primeiro (é a população que a estratégia caça).
+    if (d.gtDexes.length > 0) tasks.push(this.sources.dexPools());
     if (d.geckoTrending) tasks.push(this.sources.trending());
     if (d.geckoNew) tasks.push(this.sources.newPools());
     if (d.dexscreenerBoosts) tasks.push(this.sources.boosts());
@@ -776,14 +819,12 @@ export class TraderEngine {
       this.log.warn({ mint, err: err.message }, 'Leitura on-chain falhou');
       return null;
     });
+    // Quem sabe quais contas são estruturais é a REDE, não o engine: derivar
+    // aqui um endereço de bonding curve da Solana derrubaria o tick inteiro
+    // num token EVM marcado como curve (a fourmeme, na BSC).
+    const structural = onchain ? (this.chain.structuralAccounts?.(mint, onchain, curve) ?? []) : [];
     const holders = onchain
-      ? await this.chain
-          .getTopHolders(
-            mint,
-            onchain,
-            curve ? [curveTokenAccount(mint, onchain.token2022).toBase58()] : [],
-          )
-          .catch(() => null)
+      ? await this.chain.getTopHolders(mint, onchain, structural).catch(() => null)
       : null;
     // Ligação entre carteiras do topo — só na curve (é onde mora o bundle) e
     // só como ÚLTIMO custo do funil: ~20-30 chamadas de RPC. Timeout de 12s
@@ -791,14 +832,10 @@ export class TraderEngine {
     const linkage =
       curve && this.cfg.risk.linkageEnabled && this.chain.getHolderLinkage
         ? await withTimeoutNull(
-            this.chain.getHolderLinkage(
-              mint,
-              onchain ? [curveTokenAccount(mint, onchain.token2022).toBase58()] : [],
-              {
-                topN: this.cfg.risk.linkageTopN,
-                slotTolerance: this.cfg.risk.linkageSlotTolerance,
-              },
-            ),
+            this.chain.getHolderLinkage(mint, structural, {
+              topN: this.cfg.risk.linkageTopN,
+              slotTolerance: this.cfg.risk.linkageSlotTolerance,
+            }),
             12_000,
           )
         : null;
@@ -815,8 +852,16 @@ export class TraderEngine {
       );
     }
     const rugcheck = await this.sources.rugcheck(mint);
-    const report = assessRisk({ onchain, holders, rugcheck, curve, linkage }, this.cfg.risk);
-    return { onchain, holders, linkage, rugcheck, report };
+    // Na EVM não há como listar os maiores holders pelo RPC sem indexar
+    // Transfer — mas a fonte de segurança já traz a lista. Sem este fallback,
+    // TODO token de curve da BSC caía em "distribuição indisponível" e a
+    // checagem de concentração simplesmente não existia naquela rede.
+    const distribution = holders ?? (rugcheck.available ? (rugcheck.distribution ?? null) : null);
+    const report = assessRisk(
+      { onchain, holders: distribution, rugcheck, curve, linkage },
+      this.cfg.risk,
+    );
+    return { onchain, holders: distribution, linkage, rugcheck, report };
   }
 
   private async tryEnter(
@@ -844,6 +889,10 @@ export class TraderEngine {
     );
 
     if (report.verdict !== 'approved') {
+      // Sem esta linha a camada de risco inteira (RugCheck/GoPlus, holders,
+      // bundle) era INVISÍVEL no funil do heartbeat e do painel: o operador
+      // via só os gates e não sabia quantos tokens o risco matou.
+      if (tally) tally['risco'] = (tally['risco'] ?? 0) + 1;
       this.log.info(
         {
           mint: cand.mint,

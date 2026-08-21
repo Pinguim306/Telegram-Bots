@@ -114,7 +114,14 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
     // carteiras passava sem nenhuma análise de distribuição.
     const h = input.holders;
     if (!h) {
-      add('curve_holders_missing', 'medium', 'Distribuição do circulante indisponível', 8);
+      // Comprar sem saber a distribuição é comprar às cegas exatamente onde o
+      // bundle é mais provável (token de minutos). Quem decide se isso é
+      // aceitável é o config da rede — ver requireHolderDistribution.
+      if (cfg.requireHolderDistribution) {
+        add('curve_holders_missing', 'veto', 'Distribuição do circulante indisponível', 0);
+      } else {
+        add('curve_holders_missing', 'medium', 'Distribuição do circulante indisponível', 8);
+      }
     } else {
       if (h.top10Pct > cfg.curveMaxTop10Pct) {
         const points = Math.min(45, 25 + (h.top10Pct - cfg.curveMaxTop10Pct));
@@ -207,6 +214,17 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
   } else {
     if (rug.rugged) {
       add('rugged', 'veto', 'RugCheck já marcou este token como RUGGED', 0);
+    }
+    // Fonte respondeu sem honeypot nem taxas: não é aprovação, é ausência de
+    // análise. Pontua (não veta) para não bloquear a população inteira de
+    // tokens novos de curve, mas o operador vê a flag e o score sobe.
+    if (rug.shallow) {
+      add(
+        'seguranca_parcial',
+        'medium',
+        'Análise de segurança INCOMPLETA (sem honeypot nem taxas) — token novo demais para a fonte',
+        10,
+      );
     }
     if (rug.dangerFlags.length > 0) {
       const label = `RugCheck danger: ${rug.dangerFlags.join(', ')}`;

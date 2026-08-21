@@ -38,6 +38,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck dos testes
+        # Os testes ficam fora do build (rootDir: src), então sem este passo uma
+        # mudança de interface só aparece quando o teste QUEBRA em runtime — ou
+        # nem isso, se o campo novo não for exercitado.
+        run: npm run typecheck:test
+
       - name: Testes
         # Inclui test/config.test.ts, que valida o config/trader.json real e
         # trava limiares incoerentes. Tudo offline — nenhum teste toca rede.

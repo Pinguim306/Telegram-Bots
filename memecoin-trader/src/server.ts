@@ -94,6 +94,8 @@ export function createDashboardServer(deps: DashboardDeps): http.Server {
         paused: engine.isPaused(),
         balanceSol: await broker.balanceSol().catch(() => null),
         daily: getDailyStats(db, nowTs),
+        /** Buraco/lucro ABERTO pela marca executável — o breaker já usa, o operador não via. */
+        unrealizedSol: engine.unrealizedSol,
         lastTick: engine.lastTick,
         open: open.map((p) => ({
           id: p.id,

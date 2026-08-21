@@ -7,6 +7,7 @@ import {
 import type { Logger } from '../../log.js';
 import type { ChainAdapter, ChainKey, OnchainTokenInfo, HolderStats } from '../../types.js';
 import { analyzeHolderLinkage } from './linkage.js';
+import { curveTokenAccount } from './pumpcurve.js';
 import {
   MINT_ACCOUNT_MIN_SIZE,
   parseMintAccount,
@@ -214,6 +215,16 @@ export class SolanaChain implements ChainAdapter {
       return { address: a.address.toBase58(), raw };
     });
     return computeHolderStats(entries, info.supplyRaw, excludeAccounts);
+  }
+
+  /** Na curve do pump.fun, a conta estrutural é o vault (ATA do curve PDA). */
+  structuralAccounts(mint: string, info: OnchainTokenInfo, curve: boolean): string[] {
+    if (!curve) return [];
+    try {
+      return [curveTokenAccount(mint, info.token2022).toBase58()];
+    } catch {
+      return [];
+    }
   }
 
   /** Ligação entre carteiras do topo — ver src/chains/solana/linkage.ts. */

@@ -215,9 +215,32 @@ export class LiveBroker implements Broker {
     // sem nunca ter sido medido. Pedágio maior que o teto = o alvo de +10% já
     // nasce matematicamente improvável.
     if (this.exec.maxRoundTripCostPct > 0) {
-      const back = await this.jupiter
-        .quote(mint, WSOL_MINT, BigInt(quote.outAmount), this.exec.slippageBps)
-        .catch(() => null);
+      let back;
+      try {
+        back = await this.jupiter.quote(
+          mint,
+          WSOL_MINT,
+          BigInt(quote.outAmount),
+          this.exec.slippageBps,
+        );
+      } catch (err) {
+        // SEM ROTA DE VENDA com rota de compra existindo é a assinatura
+        // clássica de honeypot — o sinal mais forte que este código tem em
+        // mãos. Engolir isso e comprar mesmo assim (o que o `.catch(() => null)`
+        // fazia) é comprar o que não se sabe vender.
+        if (isNoRouteError(err)) {
+          throw new Error(
+            'Sem rota de VENDA para este token (a de compra existe) — assinatura de honeypot, compra abortada',
+          );
+        }
+        // Falha de rede/limite: não é evidência de honeypot, mas o custo fica
+        // sem medição — segue com aviso, protegido pelo teto de impacto acima.
+        this.log.warn(
+          { mint, err: (err as Error).message },
+          'Não consegui medir o custo round-trip — comprando sem essa checagem',
+        );
+        back = null;
+      }
       if (back) {
         const costPct = (1 - Number(back.outAmount) / Number(quote.inAmount)) * 100;
         if (costPct > this.exec.maxRoundTripCostPct) {

@@ -69,6 +69,20 @@ npm run trader -- doctor
 `check` funciona para qualquer token, mesmo fora das tendências — cole um mint e veja o
 que o bot pensaria dele.
 
+`history` não mostra só o PnL. Mostra o que decide se a estratégia é viável:
+
+- **Intervalo de confiança da win rate** (Wilson, 95%). Com 20 trades, 40% de acerto
+  significa "algo entre 20% e 64%" — nenhuma calibração feita em cima disso é real.
+  `MIN_SAMPLE_FOR_DECISION` é 100 trades.
+- **Win rate de breakeven** para o payoff observado: com o ganho médio e a perda média
+  atuais, qual acerto seria preciso para empatar. Nos trades reais analisados era 81% —
+  ou seja, a estratégia estava matematicamente perdida, e nenhum gate conserta isso.
+- **Pedágio de entrada**: quanto a posição valia *executável* (quote real de venda) no
+  primeiro tick contra o que ela custou — impacto de mercado mais taxas. Se o pedágio é
+  da ordem do alvo de lucro, o trade nasce perdido. É o número que estava escondido.
+- **PnL por motivo de saída**, que mostra onde a banca vaza (foi assim que apareceu que
+  `sniper_dump` respondia por 89% do prejuízo).
+
 ---
 
 ## Como o bot decide
@@ -326,7 +340,10 @@ TRADER_CHAIN=bsc npm run trader -- run      # paper trading (painel em http://lo
 Um **processo por rede**, de propósito: config próprio
 ([`config/trader.bsc.json`](config/trader.bsc.json)), banco próprio
 (`data/trader-bsc.sqlite`) e painel em porta própria — dá para rodar Solana live e BSC
-paper lado a lado em dois terminais, e falha numa rede não derruba a outra.
+paper lado a lado em dois terminais, e falha numa rede não derruba a outra. O
+`TRADER_MODE` do `.env` é global: com ele em `live`, o processo da BSC **se rebaixa
+para paper** e avisa no boot, em vez de recusar a subir (degradar sempre para o lado
+seguro; esconder isso, nunca).
 
 O que muda de mundo na BSC:
 
@@ -339,9 +356,31 @@ O que muda de mundo na BSC:
   checksum varia por fonte).
 - PumpPortal é pump.fun (Solana) — desligado; a descoberta usa GeckoTerminal e
   DexScreener parametrizados por rede.
+- Só se compra **bonding curve**: `allowedDexIds` é `["fourmeme", "flapsh"]`. A
+  **four.meme** entra também em `curveDexIds` (é curve pura e não reporta liquidez);
+  a **flap.sh** reporta (~US$ 8k) e passa pelos gates normais. Medindo o universo real,
+  esses tokens aparecem com US$ 3–30k e minutos de vida — o alvo da estratégia.
+- A descoberta usa `discovery.gtDexes` (`["four-meme"]`): o endpoint de pools **por
+  plataforma** do GeckoTerminal entrega direto a população que interessa. Com as fontes
+  genéricas da rede, 17 de 17 candidatos com par eram reprovados no gate de DEX.
+- **O GeckoTerminal também enriquece.** O DexScreener leva minutos para indexar um par
+  de curve recém-criado — exatamente a janela da estratégia —, e o payload de descoberta
+  do GT já traz preço, volume 5m/1h, txns, reserva e idade. Medido: sem esse fallback,
+  15 de 56 candidatos tinham par e **nenhum** chegava a ser avaliado; com ele, 52 de 52.
+  Custo: zero requisições a mais.
+- **Concentração de holders é medida sobre o CIRCULANTE.** Na four.meme o contrato da
+  curve (`0x5c95…762b`) é o maior holder em 10 de 11 tokens amostrados, com 84–99,9% do
+  supply — somar o supply cru dá "top10 = 99%" em todo token e o número não discrimina
+  nada. Excluídas as contas estruturais (curve, par de AMM, queima) e renormalizando, o
+  top1 do circulante vai de 15% a 96%: aí separa token distribuído de token bundlado.
+  Na EVM não dá para listar holders pelo RPC sem indexar `Transfer`, então a lista vem
+  do próprio GoPlus.
+- `requireHolderDistribution: true` no config da BSC: token de curve cuja distribuição
+  **não pôde ser verificada** é rejeitado, em vez de só pontuar. O GoPlus ainda não
+  computou os holders dos tokens mais novos — justamente onde o bundle é mais provável.
+  Na Solana o default é `false` (lá a distribuição vem do RPC e faltar é raro).
 - Os campos `*Sol` do config/banco valem como "moeda NATIVA" (BNB na BSC).
-- **Live na BSC é a fase 2** (PancakeSwap router, approve, nonce) — o boot recusa
-  `TRADER_MODE=live` com `TRADER_CHAIN=bsc` até lá.
+- **Live na BSC é a fase 2** (PancakeSwap router, approve, nonce).
 
 ### Expansão para outras redes
 
