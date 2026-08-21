@@ -125,9 +125,15 @@ function checkGates(snap: PairSnapshot, cfg: EntryConfig): [string, string] | nu
       return ['ritmo', `ritmo $${pace.toFixed(0)}/min < $${g.minVolumePaceUsdPerMin}/min`];
     }
   }
-  // Idade desconhecida não reprova: rejeitar por não saber silenciaria tokens
-  // legítimos que o indexador ainda não datou. As DEMAIS defesas continuam valendo.
-  if (snap.ageMin !== null) {
+  // Idade DESCONHECIDA reprova quando existe gate de idade mínima. A regra
+  // antiga ("não rejeitar por não saber") foi revertida por dados reais: 100%
+  // do prejuízo do dia analisado veio de tokens com <5min de vida, e os sem
+  // data eram exatamente os mais novos (indexador ainda sem pairCreatedAt).
+  // O engine preenche ageMin com o timestamp do PumpPortal quando o mint foi
+  // visto nascer — então "desconhecida" aqui é raro e sempre suspeito.
+  if (snap.ageMin === null) {
+    if (g.minAgeMin > 0) return ['idade_null', 'idade desconhecida — sem data de criação'];
+  } else {
     if (snap.ageMin < g.minAgeMin) {
       return ['idade_min', `idade ${snap.ageMin.toFixed(0)}min < ${g.minAgeMin}min`];
     }

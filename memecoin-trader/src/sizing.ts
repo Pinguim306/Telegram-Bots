@@ -13,6 +13,14 @@ export interface SizingInput {
   openPositions: number;
   /** PnL realizado no dia UTC corrente (negativo = perdendo). */
   dailyRealizedPnlSol: number;
+  /**
+   * PnL NÃO-realizado das posições abertas (marca executável). Só a parte
+   * NEGATIVA conta no breaker: buraco aberto é perda para a trava diária —
+   * no dia analisado, uma posição afundando -0,34 SOL "não existia" para o
+   * breaker até a venda sair, e o bot seguiu abrindo posições novas. Lucro
+   * não-realizado NÃO destrava compras (pode evaporar num candle).
+   */
+  openUnrealizedSol?: number;
   /** Score de risco 0–100 do token que se quer comprar. */
   riskScore: number;
 }
@@ -22,8 +30,9 @@ export function blockReason(input: SizingInput, cfg: SizingConfig): string | nul
   if (input.openPositions >= cfg.maxOpenPositions) {
     return `já existem ${input.openPositions}/${cfg.maxOpenPositions} posições abertas`;
   }
-  if (cfg.maxDailyLossSol > 0 && input.dailyRealizedPnlSol <= -cfg.maxDailyLossSol) {
-    return `perda diária de ${input.dailyRealizedPnlSol.toFixed(3)} SOL atingiu o limite de ${cfg.maxDailyLossSol} SOL — sem novas compras até o dia (UTC) virar`;
+  const effectiveLoss = input.dailyRealizedPnlSol + Math.min(0, input.openUnrealizedSol ?? 0);
+  if (cfg.maxDailyLossSol > 0 && effectiveLoss <= -cfg.maxDailyLossSol) {
+    return `perda diária de ${effectiveLoss.toFixed(3)} SOL (realizada ${input.dailyRealizedPnlSol.toFixed(3)} + aberta) atingiu o limite de ${cfg.maxDailyLossSol} SOL — sem novas compras até o dia (UTC) virar`;
   }
   const available = input.balanceSol - cfg.reserveSol;
   if (available < cfg.minPositionSol) {

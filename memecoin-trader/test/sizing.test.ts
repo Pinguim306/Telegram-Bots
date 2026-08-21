@@ -4,6 +4,32 @@ import { blockReason, positionSizeSol, type SizingInput } from '../src/sizing.js
 
 const cfg = loadTraderConfig().sizing;
 
+describe('breaker com mark-to-market', () => {
+  it('buraco ABERTO soma na trava diária; lucro aberto não destrava', () => {
+    // Realizado -0,2 + aberto -0,35 = -0,55 <= -0,5: trava (antes, a posição
+    // afundando "não existia" para o breaker até a venda sair).
+    const blocked = blockReason(
+      { balanceSol: 5, openPositions: 0, dailyRealizedPnlSol: -0.2, openUnrealizedSol: -0.35, riskScore: 0 },
+      cfg,
+    );
+    expect(blocked).toContain('perda diária');
+
+    // Lucro não-realizado NÃO compensa perda realizada — pode evaporar.
+    const stillBlocked = blockReason(
+      { balanceSol: 5, openPositions: 0, dailyRealizedPnlSol: -0.6, openUnrealizedSol: 1, riskScore: 0 },
+      cfg,
+    );
+    expect(stillBlocked).toContain('perda diária');
+
+    // Sem o campo (chamadas antigas), comportamento idêntico ao anterior.
+    const ok = blockReason(
+      { balanceSol: 5, openPositions: 0, dailyRealizedPnlSol: -0.2, riskScore: 0 },
+      cfg,
+    );
+    expect(ok).toBeNull();
+  });
+});
+
 function input(overrides: Partial<SizingInput> = {}): SizingInput {
   return {
     balanceSol: 5,

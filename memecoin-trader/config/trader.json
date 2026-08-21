@@ -14,7 +14,7 @@
       "newMints": true,
       "migrations": true,
       "watchWindowMin": 90,
-      "incubationMin": 3
+      "incubationMin": 5
     },
     "sourceTtlSec": 60,
     "maxCandidatesPerTick": 200,
@@ -40,7 +40,7 @@
       "minLiquidityUsd": 8000,
       "maxLiquidityUsd": 100000,
       "minVolume1hUsd": 2500,
-      "minAgeMin": 3,
+      "minAgeMin": 5,
       "maxAgeHours": 24,
       "minTxns1h": 30,
       "minBuyRatio1h": 0.55,
@@ -118,7 +118,7 @@
   },
   "sizing": {
     "positionPctOfBalance": 20,
-    "maxPositionSol": 0.5,
+    "maxPositionSol": 0.25,
     "minPositionSol": 0.01,
     "maxOpenPositions": 6,
     "reserveSol": 0.05,
@@ -146,7 +146,10 @@
     "pumpportalFallback": true,
     "maxPriorityFeeLamports": 2000000,
     "confirmTimeoutSec": 90,
-    "paperSlippagePct": 1.5
+    "paperSlippagePct": 1.5,
+    "maxRoundTripCostPct": 6,
+    "fallbackMaxPositionSol": 0.1,
+    "fallbackBuySlippageBps": 500
   },
   "ai": {
     "enabled": true,

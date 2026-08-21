@@ -75,7 +75,15 @@ export class CandidateBuffer {
       return;
     }
     this.entries.set(event.mint, {
-      candidate: { mint: event.mint, symbol: event.symbol, sources: [source] },
+      candidate: {
+        mint: event.mint,
+        symbol: event.symbol,
+        sources: [source],
+        // Mint novo: o buffer é a testemunha do nascimento. Graduação de mint
+        // que não vimos nascer NÃO define firstSeenTs — graduar prova idade
+        // mínima de ~30min de curve, mas o timestamp seria mentira.
+        ...(event.kind === 'new' ? { firstSeenTs: this.now() } : {}),
+      },
       ts: this.now(),
     });
     // Teto duro contra vazamento de memória num fluxo de milhares de mints/dia.

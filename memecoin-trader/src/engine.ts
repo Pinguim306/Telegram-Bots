@@ -127,6 +127,15 @@ export class TraderEngine {
   private paused = false;
   /** Última foto do funil — consumida pelo painel web. */
   lastTick: TickSummary | null = null;
+  /**
+   * PnL NÃO-realizado das posições abertas (marca executável), atualizado a
+   * cada gestão. Alimenta o circuit breaker: uma posição afundando -0,3 SOL
+   * "não existia" para a trava diária até virar venda — dia de cauda gorda
+   * continuava comprando com o buraco já aberto.
+   */
+  private openUnrealizedSol = 0;
+  /** Vendas FALHADAS consecutivas por posição — arma o watchdog de posição presa. */
+  private readonly sellFailures = new Map<number, number>();
 
   constructor(
     private cfg: TraderConfig,
@@ -243,6 +252,7 @@ export class TraderEngine {
 
   private async managePositions(solUsd: number, nowTs: number): Promise<void> {
     const open = listOpenPositions(this.db, this.broker.mode);
+    this.openUnrealizedSol = 0;
     if (open.length === 0) return;
 
     let snaps: Map<string, PairSnapshot>;
@@ -296,6 +306,14 @@ export class TraderEngine {
       }
 
       const tickPrice = effSnap?.priceUsd ?? null;
+
+      // PnL não-realizado desta posição, pela marca quando há, senão pelo
+      // preço do tick — soma no total que o circuit breaker enxerga.
+      if (markSol !== null && markSol > 0) {
+        this.openUnrealizedSol += markSol - pos.solSpent;
+      } else if (tickPrice !== null && solUsd > 0) {
+        this.openUnrealizedSol += (tickPrice * pos.tokensQty) / solUsd - pos.solSpent;
+      }
 
       // Mercado MORTO: volume e transações de 5m ~zero. O engine só CONTA os
       // ticks seguidos (com carência pós-compra — a janela de 5m do indexador
@@ -412,15 +430,32 @@ export class TraderEngine {
       return;
     }
 
+    // Watchdog de posição PRESA (visto em produção: venda que nunca executa e
+    // a posição assiste ao token derreter): depois de 3 vendas totais falhadas
+    // seguidas, escala para TRANCHES de 50% com slippage de emergência — lote
+    // menor tem impacto menor e passa onde a venda cheia reverte.
+    const fails = this.sellFailures.get(fresh.id) ?? 0;
+    let effPortion = portionPct;
+    let effUrgent = urgent;
+    if (fails >= 3 && portionPct >= 100) {
+      effPortion = 50;
+      effUrgent = true;
+      this.log.warn(
+        { mint: fresh.mint, symbol: fresh.symbol, falhas: fails },
+        'Posição presa — escalando para venda em tranche de 50% com slippage de emergência',
+      );
+    }
+
     try {
       const fill = await this.broker.sell(
         fresh.mint,
         fresh.tokensQty,
-        portionPct,
+        effPortion,
         snap,
         solUsd,
-        urgent,
+        effUrgent,
       );
+      this.sellFailures.delete(fresh.id);
       recordOrder(this.db, {
         positionId: fresh.id,
         ts: nowTs,
@@ -437,7 +472,14 @@ export class TraderEngine {
       });
       this.settleSell(fresh, fill, reason, nowTs, snapMcap(snap));
     } catch (err) {
-      await this.handleSellFailure(fresh, portionPct, snap, solUsd, reason, nowTs, err as Error);
+      this.sellFailures.set(fresh.id, fails + 1);
+      if (fails + 1 >= 6) {
+        this.log.error(
+          { mint: fresh.mint, symbol: fresh.symbol, falhas: fails + 1, err: (err as Error).message },
+          'POSIÇÃO PRESA: 6+ vendas falhadas seguidas — verifique o token no explorer; o bot segue tentando em tranches',
+        );
+      }
+      await this.handleSellFailure(fresh, effPortion, snap, solUsd, reason, nowTs, err as Error);
     }
   }
 
@@ -611,6 +653,7 @@ export class TraderEngine {
         balanceSol: balance,
         openPositions: open.length,
         dailyRealizedPnlSol: daily.realizedPnlSol,
+        openUnrealizedSol: this.openUnrealizedSol,
         riskScore: 0,
       },
       this.cfg.sizing,
@@ -624,9 +667,15 @@ export class TraderEngine {
     const snaps = await this.sources.pairs(candidates.map((c) => c.mint));
     const scored: { cand: Candidate; snap: PairSnapshot; entry: EntryResult }[] = [];
     for (const cand of candidates) {
-      const snap = snaps.get(cand.mint);
+      let snap = snaps.get(cand.mint);
       if (!snap) continue;
       stats.withPair++;
+      // Indexador ainda sem data de criação, mas NÓS vimos o mint nascer no
+      // PumpPortal: a idade vira (agora - nascimento). É um piso da idade real
+      // — conservador para o gate de idade mínima, nunca frouxo.
+      if (snap.ageMin === null && cand.firstSeenTs !== undefined) {
+        snap = { ...snap, ageMin: Math.max(0, (nowTs * 1000 - cand.firstSeenTs) / 60_000) };
+      }
       const entry = evaluateEntry(snap, cand.sources, this.cfg.entry);
       if (!entry.eligible) {
         const id = entry.rejectionId ?? '?';
@@ -804,6 +853,7 @@ export class TraderEngine {
         balanceSol: balanceNow,
         openPositions: openNow,
         dailyRealizedPnlSol: dailyPnlSol,
+        openUnrealizedSol: this.openUnrealizedSol,
         riskScore: report.score,
       },
       this.cfg.sizing,

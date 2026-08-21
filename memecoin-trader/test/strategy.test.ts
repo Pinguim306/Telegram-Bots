@@ -114,9 +114,13 @@ describe('evaluateEntry — gates', () => {
     expect(result.eligible).toBe(false);
   });
 
-  it('idade desconhecida NÃO reprova (o resto das defesas segue valendo)', () => {
+  it('idade desconhecida REPROVA quando há gate de idade mínima — dados reais reverteram a regra antiga', () => {
+    // 100% do prejuízo do dia analisado veio de tokens <5min; os "sem data"
+    // eram exatamente os mais novos. O engine preenche a idade pelo PumpPortal
+    // quando viu o mint nascer — desconhecida de verdade é raro e suspeito.
     const result = evaluateEntry(pumpingSnap({ ageMin: null }), ['gt-trending'], cfg.entry);
-    expect(result.eligible).toBe(true);
+    expect(result.eligible).toBe(false);
+    expect(result.rejectionId).toBe('idade_null');
   });
 
   it('reprova pressão vendedora', () => {

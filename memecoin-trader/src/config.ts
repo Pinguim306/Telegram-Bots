@@ -200,6 +200,22 @@ const executionSchema = z.object({
   maxPriorityFeeLamports: z.number().int().min(0),
   confirmTimeoutSec: z.number().int().min(10),
   paperSlippagePct: z.number().min(0).max(50),
+  /**
+   * Custo máximo (%) de COMPRAR e VENDER de volta imediatamente — impacto de
+   * ida + volta + taxas, medido ANTES da compra (curve on-chain ou dupla quote
+   * Jupiter). Análise dos trades reais: 17 de 22 perdas fecharam além do stop
+   * de -12% (média -26%) — boa parte era este pedágio, pago sem ser medido.
+   * 0 = desligado.
+   */
+  maxRoundTripCostPct: z.number().min(0).default(6),
+  /**
+   * Teto de posição da COMPRA via fallback pump.fun (sem rota Jupiter) — a
+   * ponta mais rasa e perigosa. O pior trade do dia analisado (-0,34 SOL) foi
+   * uma compra de 0,5 SOL nesta via, sem nenhuma checagem.
+   */
+  fallbackMaxPositionSol: z.number().min(0).default(0.1),
+  /** Slippage da compra via fallback — a de emergência (15%) é só para SAÍDA. */
+  fallbackBuySlippageBps: z.number().int().min(10).max(10000).default(500),
 });
 
 /**

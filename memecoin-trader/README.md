@@ -127,10 +127,17 @@ WSOL, stablecoins e LSTs estão em `excludeMints`. Token avaliado entra em coold
 ### 2. Gates de entrada (config `entry.gates`)
 
 Filtros duros de qualidade de mercado: DEX permitida (`allowedDexIds`), liquidez
-mínima/máxima (fora da curve), volume 1h mínimo, idade mínima (os primeiros minutos são
-dos snipers) e máxima, mínimo de transações, buy ratio, piso/teto de market cap (nem
-recém-mintado, nem blue chip) e queda máxima de 5m (`maxDrop5mPct` — pós-dump os números
-de 1h ainda parecem quentes, mas o fluxo real já virou). Reprovou em um, acabou.
+mínima/máxima (fora da curve), volume 1h mínimo, idade mínima e máxima, mínimo de
+transações, buy ratio, piso/teto de market cap (nem recém-mintado, nem blue chip) e
+queda máxima de 5m (`maxDrop5mPct` — pós-dump os números de 1h ainda parecem quentes,
+mas o fluxo real já virou). Reprovou em um, acabou.
+
+Sobre a idade: a análise on-chain de um dia inteiro de trades reais mostrou que **100%
+do prejuízo veio de tokens com menos de 5 minutos de vida** — o "momentum" dos primeiros
+minutos é o pump do sniper, e comprá-lo é ser a liquidez de saída dele. Por isso
+`minAgeMin` é 5, e idade **desconhecida reprova** (`idade_null`): quando o indexador
+ainda não datou o par, o bot usa o timestamp em que VIU o mint nascer no PumpPortal
+(piso da idade real — conservador); sem nem isso, não compra.
 
 ### 3. Score de sinais (config `entry.rules`)
 
