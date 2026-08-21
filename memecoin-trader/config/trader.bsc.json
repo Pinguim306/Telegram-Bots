@@ -19,6 +19,7 @@
     "gtDexes": [
       "four-meme"
     ],
+    "flapsh": true,
     "sourceTtlSec": 60,
     "maxCandidatesPerTick": 200,
     "excludeMints": [

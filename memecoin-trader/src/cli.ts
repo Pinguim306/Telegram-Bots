@@ -31,6 +31,12 @@ import {
   GtSnapshotStore,
   type GtPools,
 } from './datasources/geckoterminal.js';
+import {
+  applyFlapTaxes,
+  fetchFlapBoard,
+  fetchFlapshDexPairs,
+  FlapSecurityStore,
+} from './datasources/flapsh.js';
 import { fetchGoPlusSecurity } from './datasources/goplus.js';
 import { PumpPortalFeed } from './datasources/pumpportal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
@@ -103,6 +109,7 @@ function buildSources(
   // BSC: sem isso, os four-meme frescos viravam "candidato sem par" e nunca
   // chegavam a ser avaliados. Custo: zero requisições a mais.
   const gtSnaps = new GtSnapshotStore();
+  const flapSecurity = new FlapSecurityStore();
   const gtSource = (source: string, fetch: () => Promise<GtPools>): (() => Promise<Candidate[]>) => {
     const cached = cachedSource(fetch, ttlMs);
     return async () => {
@@ -118,15 +125,34 @@ function buildSources(
     newPools: gtSource('new', () => fetchNewPools(chain)),
     dexPools: gtSource('dex', async () => {
       // Uma falha de plataforma não pode derrubar as outras.
-      const settled = await Promise.allSettled(
-        cfg.discovery.gtDexes.map((dex) => fetchDexPools(chain, dex)),
-      );
+      const tasks: Promise<{ candidates: Candidate[]; snaps?: Map<string, PairSnapshot> }>[] =
+        cfg.discovery.gtDexes.map((dex) => fetchDexPools(chain, dex));
+      if (cfg.discovery.flapsh && chain === 'bsc') {
+        // flap.sh: o board do site traz os tokens em curve (e as taxas — ver
+        // rugcheck abaixo); a busca do DexScreener traz snapshot completo e
+        // segura a descoberta quando o board responde 429 (public_read_busy).
+        // `graduating_hot` é a população-alvo em estado puro: tokens AINDA na
+        // curve (medido: 20 de 20 com progress 32–48%), que nenhum indexador
+        // externo entrega. `trending` cobre os que já estão rodando.
+        tasks.push(
+          fetchFlapBoard('trending').then((b) => {
+            flapSecurity.put('trending', b.security);
+            return { candidates: b.candidates };
+          }),
+          fetchFlapBoard('graduating_hot').then((b) => {
+            flapSecurity.put('graduating_hot', b.security);
+            return { candidates: b.candidates };
+          }),
+          fetchFlapshDexPairs(),
+        );
+      }
+      const settled = await Promise.allSettled(tasks);
       const candidates: Candidate[] = [];
       const snaps = new Map<string, PairSnapshot>();
       for (const r of settled) {
         if (r.status !== 'fulfilled') continue;
         candidates.push(...r.value.candidates);
-        for (const [mint, snap] of r.value.snaps) {
+        for (const [mint, snap] of r.value.snaps ?? []) {
           if ((snap.liquidityUsd ?? -1) > (snaps.get(mint)?.liquidityUsd ?? -1)) snaps.set(mint, snap);
         }
       }
@@ -140,7 +166,12 @@ function buildSources(
     },
     rugcheck:
       chain === 'bsc'
-        ? (mint) => fetchGoPlusSecurity(mint, cfg.risk.rugcheckTimeoutMs)
+        ? async (mint) => {
+            const summary = await fetchGoPlusSecurity(mint, cfg.risk.rugcheckTimeoutMs);
+            // A plataforma que CRIOU o token sabe as taxas desde o bloco zero;
+            // o GoPlus leva tempo para computá-las. Só PREENCHE o que falta.
+            return applyFlapTaxes(summary, flapSecurity.get(mint));
+          }
         : (mint) => fetchRugcheck(mint, cfg.risk.rugcheckTimeoutMs),
     solPriceUsd: () => fetchNativePriceUsd(chain),
   };

@@ -61,6 +61,12 @@ const discoverySchema = z.object({
    * .default([]) para config antigo continuar válido.
    */
   gtDexes: z.array(z.string()).default([]),
+  /**
+   * Descoberta da flap.sh (BSC): board do site + busca do DexScreener.
+   * Fonte própria porque NINGUÉM a indexa direito — o GeckoTerminal não a
+   * lista como dex. Só faz sentido com TRADER_CHAIN=bsc.
+   */
+  flapsh: z.boolean().default(false),
   sourceTtlSec: z.number().int().min(0),
   maxCandidatesPerTick: z.number().int().min(1).max(300),
   excludeMints: z.array(z.string()),
