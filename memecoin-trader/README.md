@@ -128,8 +128,9 @@ WSOL, stablecoins e LSTs estão em `excludeMints`. Token avaliado entra em coold
 
 Filtros duros de qualidade de mercado: DEX permitida (`allowedDexIds`), liquidez
 mínima/máxima (fora da curve), volume 1h mínimo, idade mínima (os primeiros minutos são
-dos snipers) e máxima, mínimo de transações, buy ratio e piso/teto de market cap (nem
-recém-mintado, nem blue chip). Reprovou em um, acabou.
+dos snipers) e máxima, mínimo de transações, buy ratio, piso/teto de market cap (nem
+recém-mintado, nem blue chip) e queda máxima de 5m (`maxDrop5mPct` — pós-dump os números
+de 1h ainda parecem quentes, mas o fluxo real já virou). Reprovou em um, acabou.
 
 ### 3. Score de sinais (config `entry.rules`)
 
@@ -203,8 +204,13 @@ Regras do desenho:
    `trailingStopPct` do topo;
 4. **Take profit parcial** — realiza `takeProfitSellPct`% em `takeProfitPct` de lucro,
    uma vez, e deixa o resto correr no trailing;
-5. **Tempo máximo** (`maxHoldMin`) — memecoin sem tese não é posição de longo prazo;
-6. **Token sumiu do indexador** — espera `staleTicksToExit` ticks e sai. No live a venda
+5. **Token morto no chão** — volume 5m abaixo de `deadVolume5mUsd` e até `deadTxns5m`
+   transações por `deadTicksToExit` ticks seguidos (após `deadMinHoldMin` min de
+   carência) vende tudo. Existe porque um token que morre APÓS a compra não dispara o
+   stop loss — o preço não cai, simplesmente ninguém negocia — e ficava preso até o
+   tempo máximo, capital parado num defunto;
+6. **Tempo máximo** (`maxHoldMin`) — memecoin sem tese não é posição de longo prazo;
+7. **Token sumiu do indexador** — espera `staleTicksToExit` ticks e sai. No live a venda
    sai via Jupiter pelo preço que realmente houver; no **paper a posição é contabilizada
    como perda total** — token que some do indexador costuma ser pool drenado, e creditar
    o último preço visto transformaria um rug de −100% em −1,5%, inflando a estatística

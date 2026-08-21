@@ -296,10 +296,38 @@ export class TraderEngine {
       }
 
       const tickPrice = effSnap?.priceUsd ?? null;
+
+      // Mercado MORTO: volume e transações de 5m ~zero. O engine só CONTA os
+      // ticks seguidos (com carência pós-compra — a janela de 5m do indexador
+      // ainda contém o hype da entrada); a decisão de sair é do evaluateExit.
+      // Visto em produção: compra pós-dump e o token congelou no chão — sem
+      // uma transação sequer, o stop loss nunca dispararia.
+      const exitCfg = this.cfg.exit;
+      const isDead =
+        effSnap !== null &&
+        (nowTs - pos.entryTs) / 60 >= exitCfg.deadMinHoldMin &&
+        effSnap.vol5mUsd < exitCfg.deadVolume5mUsd &&
+        effSnap.buys5m + effSnap.sells5m <= exitCfg.deadTxns5m;
+      const deadTicks = isDead ? pos.deadTicks + 1 : 0;
+
       if (tickPrice !== null) {
-        updateTickState(this.db, pos.id, Math.max(pos.peakPriceUsd, tickPrice), tickPrice, 0);
+        updateTickState(
+          this.db,
+          pos.id,
+          Math.max(pos.peakPriceUsd, tickPrice),
+          tickPrice,
+          0,
+          deadTicks,
+        );
       } else {
-        updateTickState(this.db, pos.id, pos.peakPriceUsd, pos.lastPriceUsd, pos.staleTicks + 1);
+        updateTickState(
+          this.db,
+          pos.id,
+          pos.peakPriceUsd,
+          pos.lastPriceUsd,
+          pos.staleTicks + 1,
+          pos.deadTicks,
+        );
       }
 
       const ctx: ExitContext = {
@@ -309,6 +337,7 @@ export class TraderEngine {
         entryTs: pos.entryTs,
         tookProfit: pos.tookProfit,
         staleTicks: pos.staleTicks,
+        deadTicks: tickPrice !== null ? deadTicks : pos.deadTicks,
       };
       const decision = evaluateExit(ctx, effSnap, this.cfg.exit, nowTs);
       if (decision.action === 'hold') continue;

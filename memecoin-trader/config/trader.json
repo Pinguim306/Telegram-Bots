@@ -44,6 +44,7 @@
       "maxAgeHours": 24,
       "minTxns1h": 30,
       "minBuyRatio1h": 0.55,
+    "maxDrop5mPct": 15,
       "minMarketCapUsd": 4000,
       "maxMarketCapUsd": 30000,
       "minVolumePaceUsdPerMin": 500,
@@ -133,7 +134,11 @@
     "trailingStopPct": 5,
     "maxHoldMin": 45,
     "liquidityDrainPct": 50,
-    "staleTicksToExit": 4
+    "staleTicksToExit": 4,
+    "deadVolume5mUsd": 250,
+    "deadTxns5m": 6,
+    "deadTicksToExit": 3,
+    "deadMinHoldMin": 5
   },
   "execution": {
     "slippageBps": 200,

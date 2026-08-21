@@ -389,6 +389,65 @@ describe('TraderEngine', () => {
     expect(closed.solReceived).toBeGreaterThan(pos.solSpent * 0.5);
   });
 
+  it('token que morre no chão após a compra sai por "morto" — sem esperar o tempo máximo', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    // Tick 1: compra com o mercado quente.
+    await engine.tick(T0);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+
+    // O mercado MORRE: preço congela perto da entrada (nunca stopa), volume e
+    // txns de 5m zeram — o caso Hashbrown real ($23k de volume na 1ª hora,
+    // depois zero absoluto).
+    state.snap = snap({
+      priceUsd: entryPrice * 0.99,
+      vol5mUsd: 0,
+      buys5m: 0,
+      sells5m: 0,
+    });
+
+    // Dentro da carência pós-compra: ainda não conta como morto.
+    await engine.tick(T0 + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    expect(listOpenPositions(db, 'paper')[0]!.deadTicks).toBe(0);
+
+    // Passada a carência, cada tick morto conta — e no limiar, vende tudo.
+    const afterGrace = T0 + (cfg.exit.deadMinHoldMin + 1) * 60;
+    for (let i = 0; i < cfg.exit.deadTicksToExit; i++) {
+      await engine.tick(afterGrace + i * 15);
+    }
+    expect(listOpenPositions(db, 'paper')).toHaveLength(0);
+    const closed = listClosedPositions(db, 'paper')[0]!;
+    expect(closed.exitReason).toContain('morto');
+    // Saiu pelo preço que ainda havia (-1% e slippage) — NÃO é a perda total
+    // do caminho "sumiu do indexador".
+    expect(closed.solReceived).toBeGreaterThan(closed.solSpent * 0.9);
+  });
+
+  it('volume 5m voltando zera a contagem de morto — mercado vivo não sai por faxina', async () => {
+    const state = { snap: snap() as PairSnapshot | null };
+    const broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+    const engine = new TraderEngine(cfg, db, broker, new FakeChain(), fakeSources(state), log);
+
+    await engine.tick(T0);
+    const entryPrice = listOpenPositions(db, 'paper')[0]!.entryPriceUsd;
+    const afterGrace = T0 + (cfg.exit.deadMinHoldMin + 1) * 60;
+
+    // Alguns ticks mortos (abaixo do limiar)...
+    state.snap = snap({ priceUsd: entryPrice, vol5mUsd: 0, buys5m: 0, sells5m: 0 });
+    for (let i = 0; i < cfg.exit.deadTicksToExit - 1; i++) {
+      await engine.tick(afterGrace + i * 15);
+    }
+    // ...o volume volta: contagem zera.
+    state.snap = snap({ priceUsd: entryPrice, vol5mUsd: 5_000, buys5m: 30, sells5m: 10 });
+    await engine.tick(afterGrace + 60);
+    expect(listOpenPositions(db, 'paper')).toHaveLength(1);
+    expect(listOpenPositions(db, 'paper')[0]!.deadTicks).toBe(0);
+  });
+
   it('fechar por tempo máximo re-arma o cooldown — sem recompra no MESMO tick', async () => {
     const state = { snap: snap() as PairSnapshot | null };
     const broker = new PaperBroker(db, cfg.execution, cfg.sizing);

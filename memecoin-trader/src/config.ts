@@ -107,6 +107,14 @@ const entrySchema = z.object({
     /** Ritmo mínimo de transações por minuto de vida (teto 60). 0 = desligado. */
     minTxnsPerMin: z.number().min(0),
     minBuyRatio1h: z.number().min(0).max(1),
+    /**
+     * Reprova token que caiu mais que isto (%) nos últimos 5 minutos.
+     * Comprar logo após um dump é pegar faca: os números de 1h ainda parecem
+     * quentes (todo o volume aconteceu no pump), mas o fluxo já morreu — visto
+     * em produção com um token que despencou e ficou sem NENHUMA transação.
+     * 0 = desligado.
+     */
+    maxDrop5mPct: z.number().min(0).default(15),
     /** Piso de market cap (0 = sem piso). Na curve, é a defesa contra recém-mintado. */
     minMarketCapUsd: z.number().min(0),
     /** 0 = sem teto. */
@@ -160,6 +168,19 @@ const exitSchema = z.object({
   liquidityDrainPct: z.number().min(1).max(100),
   /** Ticks seguidos sem dado de preço até desistir e vender. */
   staleTicksToExit: z.number().int().min(1),
+  /**
+   * Saída "token morto no chão": volume 5m abaixo de deadVolume5mUsd E
+   * transações 5m até deadTxns5m, por deadTicksToExit ticks seguidos, depois
+   * de deadMinHoldMin minutos de posição → vende tudo. Existe porque um token
+   * que morre APÓS a compra não dispara stop loss (o preço não cai — ninguém
+   * negocia) e ficava preso até o tempo máximo, capital parado num defunto.
+   * Todos com .default() para config antigo continuar válido.
+   */
+  deadVolume5mUsd: z.number().min(0).default(250),
+  deadTxns5m: z.number().int().min(0).default(6),
+  deadTicksToExit: z.number().int().min(1).default(3),
+  /** Carência pós-compra: a janela de 5m do indexador ainda contém o hype da entrada. */
+  deadMinHoldMin: z.number().min(0).default(5),
 });
 
 const executionSchema = z.object({

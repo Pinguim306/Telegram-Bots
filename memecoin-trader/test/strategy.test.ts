@@ -127,6 +127,18 @@ describe('evaluateEntry — gates', () => {
     expect(result.rejection).toContain('buy ratio');
   });
 
+  it('reprova despencada de 5m — pós-dump não é entrada (caso Hashbrown)', () => {
+    // Números de 1h ainda quentes (o pump inteiro está na janela), mas o 5m
+    // mostra a queda: é exatamente o token que morre no chão logo depois.
+    const result = evaluateEntry(
+      pumpingSnap({ change5mPct: -(cfg.entry.gates.maxDrop5mPct + 1) }),
+      ['gt-trending'],
+      cfg.entry,
+    );
+    expect(result.eligible).toBe(false);
+    expect(result.rejectionId).toBe('queda_5m');
+  });
+
   it('reprova market cap alto demais (blue chip não é alvo)', () => {
     const result = evaluateEntry(pumpingSnap({ marketCapUsd: 500_000_000 }), [], cfg.entry);
     expect(result.eligible).toBe(false);
@@ -204,6 +216,7 @@ describe('evaluateExit', () => {
       entryTs: nowTs - 600,
       tookProfit: false,
       staleTicks: 0,
+      deadTicks: 0,
       ...overrides,
     };
   }
@@ -275,6 +288,30 @@ describe('evaluateExit', () => {
 
     const sell = evaluateExit(ctx({ staleTicks: cfg.exit.staleTicksToExit - 1 }), null, cfg.exit, nowTs);
     expect(sell).toMatchObject({ action: 'sell', portionPct: 100, urgent: true });
+  });
+
+  it('token morto (deadTicks no limiar) vende tudo — caso Hashbrown: preço congelado nunca stopa', () => {
+    // Snap com preço estável (nem stop nem TP) — só o mercado morreu.
+    const deadSnap = pumpingSnap({ priceUsd: 0.00098, vol5mUsd: 0, buys5m: 0, sells5m: 0 });
+
+    const wait = evaluateExit(
+      ctx({ deadTicks: cfg.exit.deadTicksToExit - 1 }),
+      deadSnap,
+      cfg.exit,
+      nowTs,
+    );
+    expect(wait.action).toBe('hold');
+
+    const sell = evaluateExit(ctx({ deadTicks: cfg.exit.deadTicksToExit }), deadSnap, cfg.exit, nowTs);
+    expect(sell).toMatchObject({ action: 'sell', portionPct: 100, urgent: false });
+    if (sell.action === 'sell') expect(sell.reason).toContain('morto');
+  });
+
+  it('stop loss tem prioridade sobre token morto — proteção antes de faxina', () => {
+    const crashed = pumpingSnap({ priceUsd: 0.0005, vol5mUsd: 0, buys5m: 0, sells5m: 0 });
+    const sell = evaluateExit(ctx({ deadTicks: 99 }), crashed, cfg.exit, nowTs);
+    expect(sell).toMatchObject({ action: 'sell', urgent: true });
+    if (sell.action === 'sell') expect(sell.reason).toContain('stop loss');
   });
 
   it('liquidez DESCONHECIDA na resposta não dispara venda por dreno (mas zero real dispara)', () => {
