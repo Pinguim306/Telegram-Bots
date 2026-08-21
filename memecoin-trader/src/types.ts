@@ -125,9 +125,23 @@ export type RugcheckSummary =
        */
       buyTaxPct?: number | null;
       sellTaxPct?: number | null;
+      /**
+       * true = a fonte RESPONDEU, mas sem os sinais decisivos (honeypot e
+       * taxas vieram ausentes). Medido na fourmeme/flap.sh: acontece na
+       * maioria dos tokens novos. Sem isto, "análise vazia" era
+       * indistinguível de "análise limpa" — falso conforto no pior momento.
+       */
+      shallow?: boolean;
       holderCount: number | null;
       /** Top 10 holders (%) já excluindo contas conhecidas de AMM/LP. */
       top10Pct: number | null;
+      /**
+       * Distribuição do CIRCULANTE derivada da própria fonte de segurança.
+       * Existe para a EVM: na BSC não há como ler os maiores holders pelo RPC
+       * sem indexar Transfer, e o GoPlus já devolve a lista — sem isto, todo
+       * token de curve da BSC caía em "distribuição indisponível".
+       */
+      distribution?: HolderStats | null;
     }
   | { available: false; reason: string };
 
@@ -221,6 +235,13 @@ export interface ChainAdapter {
     info: OnchainTokenInfo,
     excludeAccounts?: string[],
   ): Promise<HolderStats | null>;
+  /**
+   * Contas ESTRUTURAIS a excluir da análise de distribuição — o vault da
+   * bonding curve, por exemplo. Cada rede sabe as suas; o engine só pergunta.
+   * Sem isso o engine precisaria derivar endereços de uma rede específica, e
+   * derivar um endereço Solana para um token EVM derruba o tick.
+   */
+  structuralAccounts?(mint: string, info: OnchainTokenInfo, curve: boolean): string[];
   /**
    * Ligação entre as carteiras do topo (bundle de sniper): compra no mesmo
    * bloco e financiador comum. Opcional — implementações de teste podem omitir.

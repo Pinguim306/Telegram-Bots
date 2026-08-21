@@ -1,6 +1,6 @@
 import { cleanLabel } from '../format.js';
 import { fetchJson } from '../http.js';
-import type { RugcheckSummary } from '../types.js';
+import type { HolderStats, RugcheckSummary } from '../types.js';
 
 /**
  * GoPlus Security — o "RugCheck" da EVM. Na BSC, cada token é um CONTRATO
@@ -19,10 +19,83 @@ const BASE = 'https://api.gopluslabs.io/api/v1';
 const BSC_CHAIN_ID = '56';
 
 const flag = (v: unknown): boolean => v === '1' || v === 1 || v === true;
+
+/**
+ * Fração do GoPlus para %. String VAZIA e ausência viram `null` (desconhecido),
+ * nunca 0: medido na fourmeme/flap.sh, `buy_tax`/`sell_tax` vêm `''` em 10 de
+ * 10 tokens — e `Number('')` é 0, o que transformava "taxa desconhecida" em
+ * "sem taxa" exatamente no vetor de morte nº 1 da BSC.
+ */
 const pct = (v: unknown): number | null => {
+  if (v === '' || v === null || v === undefined) return null;
   const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
   return Number.isFinite(n) ? n * 100 : null;
 };
+
+/**
+ * Contas ESTRUTURAIS: seguram supply mas não são ninguém. Sem excluí-las, a
+ * "concentração" de qualquer token de bonding curve é 99% — o número não
+ * discrimina nada e a checagem de distribuição vira decoração.
+ *
+ * Medido na four.meme: o contrato abaixo é o top1 holder em 10 de 11 tokens
+ * amostrados, com 84%–99,9% do supply. É a curve, não um whale.
+ */
+const STRUCTURAL_ADDRESSES = new Set([
+  '0x5c952063c7fc8610ffdb798152d69f0b9550762b', // bonding curve da four.meme
+  '0x000000000000000000000000000000000000dead', // burn
+  '0x0000000000000000000000000000000000000000', // zero
+]);
+
+/** Como o GoPlus rotula pares de AMM em `holders[].tag`. */
+const AMM_TAGS = ['pancake', 'uniswap', 'biswap', 'apeswap', 'sushi', 'thena'];
+
+const isStructuralHolder = (h: Record<string, unknown>): boolean => {
+  const address = typeof h.address === 'string' ? h.address.toLowerCase() : '';
+  if (STRUCTURAL_ADDRESSES.has(address)) return true;
+  const tag = typeof h.tag === 'string' ? h.tag.toLowerCase() : '';
+  return tag !== '' && AMM_TAGS.some((t) => tag.includes(t));
+};
+
+/**
+ * Distribuição do CIRCULANTE a partir dos holders do GoPlus.
+ *
+ * `holders[].percent` é fração do supply TOTAL, que numa curve está quase todo
+ * no contrato da plataforma. O que interessa é a fatia de quem realmente pode
+ * vender: renormaliza sobre o circulante depois de tirar as contas estruturais.
+ * Medido na four.meme, o top1 do circulante vai de 15% a 96% — aí sim separa
+ * token distribuído de token bundlado.
+ *
+ * Devolve null quando não dá para afirmar nada: sem lista de holders, ou com
+ * circulante irrisório (a curve mal começou — qualquer percentual é ruído, e
+ * inventar um número aqui seria pior que admitir que não se sabe).
+ */
+export function holderDistribution(raw: unknown): HolderStats | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const holders = raw as Record<string, unknown>[];
+
+  let structuralPct = 0;
+  const free: number[] = [];
+  for (const h of holders) {
+    const p = pct(h?.percent);
+    if (p === null) continue;
+    if (isStructuralHolder(h)) structuralPct += p;
+    else free.push(p);
+  }
+
+  const circulatingPct = 100 - structuralPct;
+  if (circulatingPct < 0.5 || free.length === 0) return null;
+
+  free.sort((a, b) => b - a);
+  const share = (slice: number[]): number =>
+    Math.min(100, (slice.reduce((s, p) => s + p, 0) / circulatingPct) * 100);
+
+  return {
+    top1Pct: share(free.slice(0, 1)),
+    top10Pct: share(free.slice(0, 10)),
+    holderCount: null,
+    source: 'rugcheck',
+  };
+}
 
 /**
  * Mapeia a resposta crua do GoPlus para RugcheckSummary. Exportada para teste.
@@ -67,24 +140,22 @@ export function mapGoPlusToken(raw: unknown): RugcheckSummary {
     warn(`taxa de venda de ${sellTaxPct.toFixed(1)}%`);
   }
 
-  // Top 10 holders (% do supply). O GoPlus lista LP/contratos marcados — a
-  // soma crua é conservadora; os limiares do risco já são generosos.
-  let top10Pct: number | null = null;
-  if (Array.isArray(t.holders)) {
-    let sum = 0;
-    for (const h of (t.holders as Record<string, unknown>[]).slice(0, 10)) {
-      sum += pct(h?.percent) ?? 0;
-    }
-    top10Pct = sum > 0 ? sum : null;
-  }
+  // Distribuição sobre o CIRCULANTE (contas estruturais fora) — é o contrato
+  // que `top10Pct` sempre prometeu e que a soma crua do supply não cumpria.
+  const distribution = holderDistribution(t.holders);
+  const top10Pct = distribution?.top10Pct ?? null;
 
   const holderCountRaw = t.holder_count;
-  const holderCount =
+  const holderCountParsed =
     typeof holderCountRaw === 'string' && /^\d+$/.test(holderCountRaw)
       ? Number(holderCountRaw)
       : typeof holderCountRaw === 'number'
         ? holderCountRaw
         : null;
+  // ZERO holders num token que tem par e negociação é dado NÃO COMPUTADO, não
+  // realidade (visto em 7 de 10 tokens novos de curve). Tratar como 0 gerava a
+  // flag "poucos holders" em toda a população-alvo — ruído que não discrimina.
+  const holderCount = holderCountParsed === 0 ? null : holderCountParsed;
 
   // % da LP travada/queimada, ponderada pelo tamanho de cada posição de LP.
   let lpLockedPct: number | null = null;
@@ -99,8 +170,16 @@ export function mapGoPlusToken(raw: unknown): RugcheckSummary {
     if (total > 0) lpLockedPct = (locked / total) * 100;
   }
 
+  // A resposta veio, mas sem NENHUM dos dois sinais que decidem na BSC.
+  // Token novo de bonding curve cai aqui quase sempre — e o operador precisa
+  // saber que a rede de segurança não cobriu este caso.
+  const shallow =
+    t.is_honeypot === undefined ||
+    (t.is_honeypot === null && buyTaxPct === null && sellTaxPct === null);
+
   return {
     available: true,
+    shallow,
     rugged: honeypot,
     scoreNormalized: null,
     dangerFlags: dangerFlags.map((f) => cleanLabel(f, 80)),
@@ -109,6 +188,7 @@ export function mapGoPlusToken(raw: unknown): RugcheckSummary {
     lpLockedPct,
     holderCount,
     top10Pct,
+    distribution: distribution && { ...distribution, holderCount },
     buyTaxPct,
     sellTaxPct,
   };

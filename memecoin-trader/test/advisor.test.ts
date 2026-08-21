@@ -48,7 +48,7 @@ function input(): AdvisorInput {
     report: {
       score: 15,
       verdict: 'approved',
-      flags: [{ id: 'x', severity: 'info', label: 'LP 95% travada' }],
+      flags: [{ id: 'x', severity: 'low', label: 'LP 95% travada' }],
     } as AdvisorInput['report'],
     holderCount: 240,
     top10Pct: 18,

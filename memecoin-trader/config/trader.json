@@ -16,6 +16,7 @@
       "watchWindowMin": 90,
       "incubationMin": 5
     },
+    "gtDexes": [],
     "sourceTtlSec": 60,
     "maxCandidatesPerTick": 200,
     "excludeMints": [
@@ -44,7 +45,7 @@
       "maxAgeHours": 24,
       "minTxns1h": 30,
       "minBuyRatio1h": 0.55,
-    "maxDrop5mPct": 15,
+      "maxDrop5mPct": 15,
       "minMarketCapUsd": 4000,
       "maxMarketCapUsd": 30000,
       "minVolumePaceUsdPerMin": 500,

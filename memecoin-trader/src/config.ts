@@ -53,6 +53,13 @@ const discoverySchema = z.object({
    * jeito. O enriquecimento (preço/volume via DexScreener) continua fresco por
    * tick; só a LISTA de candidatos é cacheada.
    */
+  /**
+   * Plataformas (dexId do GeckoTerminal) cujas pools são buscadas DIRETO, além
+   * do trending/new da rede. Na BSC, `four-meme` — sem isto a descoberta traz
+   * o mercado inteiro (PancakeSwap estabelecida) e o gate de DEX reprova tudo.
+   * .default([]) para config antigo continuar válido.
+   */
+  gtDexes: z.array(z.string()).default([]),
   sourceTtlSec: z.number().int().min(0),
   maxCandidatesPerTick: z.number().int().min(1).max(300),
   excludeMints: z.array(z.string()),
@@ -147,6 +154,15 @@ const riskSchema = z.object({
    */
   curveMaxTop1Pct: z.number().min(0).max(100).default(30),
   curveMaxTop10Pct: z.number().min(0).max(100).default(70),
+  /**
+   * true = token na curve SEM distribuição conhecida é rejeitado.
+   *
+   * Na Solana a distribuição vem do RPC e quase nunca falta, então o default é
+   * false. Na BSC a única fonte é o GoPlus, que ainda não computou os holders
+   * dos tokens mais novos — justamente a população onde o bundle é mais
+   * provável. Ligado, o bot deixa de comprar o que não consegue verificar.
+   */
+  requireHolderDistribution: z.boolean().default(false),
   /**
    * Análise de LIGAÇÃO entre as carteiras do topo (token na curve): compra no
    * mesmo bloco (bundle) e financiador comum (carteira-mãe). Concentração
@@ -328,6 +344,12 @@ export function loadTraderConfig(path = resolve(projectRoot, 'config', 'trader.j
 
 export interface TraderEnv {
   mode: TradeMode;
+  /**
+   * true = o .env pedia `live` mas esta rede ainda não executa ao vivo, então
+   * o modo foi rebaixado para paper. O CLI grita isso no boot — degradar em
+   * silêncio para o lado SEGURO é aceitável; esconder, não.
+   */
+  liveDowngraded: boolean;
   /** Rede deste PROCESSO (TRADER_CHAIN). Uma rede por processo, de propósito. */
   chain: 'solana' | 'bsc';
   liveAck: boolean;
@@ -360,8 +382,14 @@ export function loadEnv(): TraderEnv {
   if (chainRaw !== 'solana' && chainRaw !== 'bsc') {
     throw new Error(`TRADER_CHAIN inválido: "${chainRaw}". Use "solana" ou "bsc".`);
   }
+  // `TRADER_MODE` é global no .env, mas a BSC ainda não tem execução live
+  // (fase 2). Recusar o boot quebrava o fluxo documentado de rodar Solana live
+  // e BSC paper lado a lado com o MESMO .env. Degrada para paper — sempre na
+  // direção de MENOS risco — e o CLI avisa alto no banner.
+  const liveDowngraded = chainRaw === 'bsc' && modeRaw === 'live';
   return {
-    mode: modeRaw,
+    mode: liveDowngraded ? 'paper' : modeRaw,
+    liveDowngraded,
     chain: chainRaw,
     liveAck: envOrUndefined('LIVE_TRADING_ACK') === LIVE_ACK_PHRASE,
     privateKey: envOrUndefined('SOLANA_PRIVATE_KEY'),
@@ -390,12 +418,9 @@ export function loadEnv(): TraderEnv {
  * a pessoa ter pedido de verdade.
  */
 export function assertLiveAllowed(env: TraderEnv): void {
+  // `loadEnv` já rebaixou a BSC para paper (liveDowngraded) — aqui só sobra
+  // rede que executa ao vivo de verdade.
   if (env.mode !== 'live') return;
-  if (env.chain === 'bsc') {
-    throw new Error(
-      'TRADER_CHAIN=bsc ainda não suporta modo LIVE (fase 2 do plano) — rode em paper: TRADER_MODE=paper.',
-    );
-  }
   if (!env.liveAck) {
     throw new Error(
       [

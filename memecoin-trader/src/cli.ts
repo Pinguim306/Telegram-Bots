@@ -23,7 +23,13 @@ import {
   fetchPairsForMints,
   fetchTopBoosts,
 } from './datasources/dexscreener.js';
-import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.js';
+import {
+  fetchDexPools,
+  fetchNewPools,
+  fetchTrendingPools,
+  GtSnapshotStore,
+  type GtPools,
+} from './datasources/geckoterminal.js';
 import { fetchGoPlusSecurity } from './datasources/goplus.js';
 import { PumpPortalFeed } from './datasources/pumpportal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
@@ -31,8 +37,9 @@ import { cachedSource, TraderEngine, type Sources } from './engine.js';
 import { startDashboard } from './server.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
+import { computeTradeStats, MIN_SAMPLE_FOR_DECISION } from './stats.js';
 import { loadKeypair } from './wallet.js';
-import type { Broker, ChainAdapter } from './types.js';
+import type { Broker, Candidate, ChainAdapter, PairSnapshot } from './types.js';
 
 const HELP = `
 memecoin-trader — bot pessoal de trading de memecoins na Solana
@@ -84,12 +91,49 @@ function buildSources(
   // enriquecimento e preço do nativo continuam frescos a cada tick. O PumpPortal
   // é push (websocket, só Solana) — a watchlist dele já é o "cache".
   const ttlMs = cfg.discovery.sourceTtlSec * 1000;
+
+  // O GeckoTerminal devolve preço, volume 5m/1h, txns, reserva e idade no MESMO
+  // payload da descoberta. O DexScreener leva minutos para indexar um par
+  // recém-criado — exatamente a janela da estratégia de bonding curve —, então
+  // guardamos o que já veio e usamos como enriquecimento de fallback. Medido na
+  // BSC: sem isso, os four-meme frescos viravam "candidato sem par" e nunca
+  // chegavam a ser avaliados. Custo: zero requisições a mais.
+  const gtSnaps = new GtSnapshotStore();
+  const gtSource = (source: string, fetch: () => Promise<GtPools>): (() => Promise<Candidate[]>) => {
+    const cached = cachedSource(fetch, ttlMs);
+    return async () => {
+      const pools = await cached();
+      gtSnaps.put(source, pools.snaps);
+      return pools.candidates;
+    };
+  };
+
   return {
     pumpportal: async () => pumpportal?.candidates() ?? [],
-    trending: cachedSource(() => fetchTrendingPools(chain), ttlMs),
-    newPools: cachedSource(() => fetchNewPools(chain), ttlMs),
+    trending: gtSource('trending', () => fetchTrendingPools(chain)),
+    newPools: gtSource('new', () => fetchNewPools(chain)),
+    dexPools: gtSource('dex', async () => {
+      // Uma falha de plataforma não pode derrubar as outras.
+      const settled = await Promise.allSettled(
+        cfg.discovery.gtDexes.map((dex) => fetchDexPools(chain, dex)),
+      );
+      const candidates: Candidate[] = [];
+      const snaps = new Map<string, PairSnapshot>();
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue;
+        candidates.push(...r.value.candidates);
+        for (const [mint, snap] of r.value.snaps) {
+          if ((snap.liquidityUsd ?? -1) > (snaps.get(mint)?.liquidityUsd ?? -1)) snaps.set(mint, snap);
+        }
+      }
+      return { candidates, snaps };
+    }),
     boosts: cachedSource(() => fetchTopBoosts(chain), ttlMs),
-    pairs: (mints) => fetchPairsForMints(mints, Date.now(), chain),
+    pairs: async (mints) => {
+      const found = await fetchPairsForMints(mints, Date.now(), chain);
+      gtSnaps.fill(found, mints);
+      return found;
+    },
     rugcheck:
       chain === 'bsc'
         ? (mint) => fetchGoPlusSecurity(mint, cfg.risk.rugcheckTimeoutMs)
@@ -229,6 +273,12 @@ async function cmdTick(): Promise<void> {
 
 function printModeBanner(ctx: Ctx): void {
   const rede = ctx.env.chain === 'bsc' ? 'BSC' : 'Solana';
+  if (ctx.env.liveDowngraded) {
+    logger.warn(
+      `⚠️  TRADER_MODE=live no .env, mas a ${rede} ainda não executa ao vivo (fase 2) — ` +
+        'este processo foi rebaixado para PAPER. Nenhuma ordem real será enviada nesta rede.',
+    );
+  }
   if (ctx.env.mode === 'live') {
     logger.warn(
       { wallet: ctx.chain.walletAddress(), rede },
@@ -368,21 +418,72 @@ async function cmdHistory(args: string[]): Promise<void> {
     p.exitTs ? new Date(p.exitTs * 1000).toISOString().slice(5, 16).replace('T', ' ') : '?',
     cleanLabel(p.symbol, 12),
     sol(p.solSpent),
+    // Pedágio de entrada por trade: o que a posição valia executável no
+    // primeiro tick contra o que ela custou.
+    p.entryMarkPriceUsd !== null && p.entryPriceUsd > 0
+      ? pct((p.entryMarkPriceUsd / p.entryPriceUsd - 1) * 100)
+      : '—',
     p.entryMcapUsd !== null ? usd(p.entryMcapUsd) : '?',
-    p.exitMcapUsd !== null ? usd(p.exitMcapUsd) : '?',
     sol(p.pnlSol ?? 0),
     pct(p.pnlPct ?? 0),
     p.exitReason ?? '?',
   ]);
   console.log(
-    table(rows, ['Saída (UTC)', 'Token', 'Gasto(SOL)', 'MC entr.', 'MC saída', 'PnL(SOL)', 'PnL%', 'Motivo']),
+    table(rows, ['Saída (UTC)', 'Token', 'Gasto(SOL)', 'Pedágio entr.', 'MC entr.', 'PnL(SOL)', 'PnL%', 'Motivo']),
   );
 
-  const totalPnl = closed.reduce((a, p) => a + (p.pnlSol ?? 0), 0);
-  const wins = closed.filter((p) => (p.pnlSol ?? 0) >= 0).length;
+  const s = computeTradeStats(closed);
   console.log(
-    `\nTotal (${closed.length} trades): ${sol(totalPnl)} SOL · ${wins}W/${closed.length - wins}L (${((wins / closed.length) * 100).toFixed(0)}% win rate)`,
+    `\nTotal (${s.n} trades): ${sol(s.totalPnlSol)} SOL · ${s.wins}W/${s.losses}L · ` +
+      `win rate ${s.winRatePct.toFixed(0)}% (IC95% ${s.winRateCi95[0].toFixed(0)}–${s.winRateCi95[1].toFixed(0)}%)`,
   );
+  console.log(
+    `Expectativa por trade: ${sol(s.expectancySol)} SOL` +
+      (s.avgWinPct !== null && s.avgLossPct !== null
+        ? ` · ganho médio ${pct(s.avgWinPct)} vs perda média ${pct(s.avgLossPct)}`
+        : '') +
+      (s.medianHoldMin !== null ? ` · hold mediano ${ageMin(s.medianHoldMin)}` : ''),
+  );
+  if (s.breakevenWrPct !== null) {
+    const veredito = s.winRatePct >= s.breakevenWrPct ? 'acima' : 'ABAIXO';
+    console.log(
+      `Win rate de breakeven com este payoff: ${s.breakevenWrPct.toFixed(0)}% — você está ${veredito} dela.`,
+    );
+  }
+
+  // O número mais importante e o que estava escondido: se o pedágio de entrada
+  // é da ordem do alvo de lucro, o trade nasce perdido e nenhum gate salva.
+  if (s.entryTollPct) {
+    const alvo = ctx.cfg.exit.takeProfitPct;
+    const t = s.entryTollPct;
+    console.log(
+      `\nPedágio de ENTRADA (impacto + taxas), mediana de ${t.n} trades: ${pct(t.medianPct)} ` +
+        `— contra um alvo de lucro de +${alvo}%.`,
+    );
+    if (Math.abs(t.medianPct) >= alvo * 0.5) {
+      console.log(
+        `  ⚠️  O pedágio já consome ${((Math.abs(t.medianPct) / alvo) * 100).toFixed(0)}% do alvo. ` +
+          'Reduza o tamanho da posição, exija pool mais fundo ou aumente o alvo — ajustar gates não resolve isto.',
+      );
+    }
+  } else {
+    console.log(
+      '\nPedágio de entrada: sem medição (nenhuma posição tem marca executável — normal no modo paper).',
+    );
+  }
+
+  console.log('\nPnL por motivo de saída (o que drena a banca):');
+  for (const r of s.byExitReason) {
+    console.log(`   ${r.reason.padEnd(22)} ${String(r.n).padStart(3)} trades  ${sol(r.pnlSol)} SOL`);
+  }
+
+  if (s.n < MIN_SAMPLE_FOR_DECISION) {
+    console.log(
+      `\n⚠️  Amostra de ${s.n} trades é pequena demais para decidir mudança de config ` +
+        `(o IC95% da win rate vai de ${s.winRateCi95[0].toFixed(0)}% a ${s.winRateCi95[1].toFixed(0)}%). ` +
+        `Abaixo de ${MIN_SAMPLE_FOR_DECISION} trades, ajustar parâmetros é ajustar ruído.`,
+    );
+  }
 }
 
 async function cmdPaperReset(): Promise<void> {
@@ -444,7 +545,7 @@ async function cmdDoctor(): Promise<void> {
     }
     try {
       const trending = await fetchTrendingPools('bsc');
-      ok('GeckoTerminal trending (bsc)', `${trending.length} pools`);
+      ok('GeckoTerminal trending (bsc)', `${trending.candidates.length} pools`);
     } catch (err) {
       bad('GeckoTerminal', (err as Error).message);
     }
@@ -504,7 +605,7 @@ async function cmdDoctor(): Promise<void> {
   }
   try {
     const trending = await fetchTrendingPools();
-    ok('GeckoTerminal trending', `${trending.length} pools`);
+    ok('GeckoTerminal trending', `${trending.candidates.length} pools`);
   } catch (err) {
     bad('GeckoTerminal', (err as Error).message);
   }
