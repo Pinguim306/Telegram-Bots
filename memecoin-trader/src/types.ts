@@ -86,9 +86,13 @@ export interface OnchainTokenInfo {
 }
 
 export interface HolderStats {
-  /** % do supply na maior conta de token. Pode incluir o vault do pool — ver docs. */
+  /**
+   * % da BASE na maior conta de token. A base é o supply total — ou o supply
+   * CIRCULANTE quando contas estruturais (vault da curve) foram excluídas na
+   * leitura. Fora da curve, pode incluir vault de pool AMM — ver docs.
+   */
   top1Pct: number;
-  /** % do supply somando as 10 maiores contas. */
+  /** % da base somando as 10 maiores contas. */
   top10Pct: number;
   holderCount: number | null;
   source: 'rugcheck' | 'onchain';
@@ -198,5 +202,22 @@ export interface ChainAdapter {
   /** Saldo do token na carteira, em unidades de UI. 0 quando não há carteira. */
   tokenBalanceUi(mint: string): Promise<number>;
   getOnchainTokenInfo(mint: string): Promise<OnchainTokenInfo | null>;
-  getTopHolders(mint: string, info: OnchainTokenInfo): Promise<HolderStats | null>;
+  /**
+   * `excludeAccounts`: contas estruturais (vault da bonding curve) a remover —
+   * o percentual passa a ser sobre o supply CIRCULANTE, não o total.
+   */
+  getTopHolders(
+    mint: string,
+    info: OnchainTokenInfo,
+    excludeAccounts?: string[],
+  ): Promise<HolderStats | null>;
+  /**
+   * Ligação entre as carteiras do topo (bundle de sniper): compra no mesmo
+   * bloco e financiador comum. Opcional — implementações de teste podem omitir.
+   */
+  getHolderLinkage?(
+    mint: string,
+    excludeAccounts: string[],
+    opts: { topN: number; slotTolerance: number },
+  ): Promise<import('./chains/solana/linkage.js').LinkageReport | null>;
 }

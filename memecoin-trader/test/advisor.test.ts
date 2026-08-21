@@ -116,9 +116,9 @@ describe('buildSystemPrompt', () => {
     expect(openEnded).toContain('sem teto');
   });
 
-  it('avisa que o top10 de token de curve pode incluir o vault', () => {
+  it('anota que o top10 de token de curve é sobre o circulante (vault já excluído)', () => {
     const brief = buildBrief(input());
-    expect(brief).toContain('vault da bonding curve');
+    expect(brief).toContain('vault da curve excluído');
   });
 });
 
