@@ -1,14 +1,14 @@
-import { resolve } from 'node:path';
 import {
   assertLiveAllowed,
+  configPathForChain,
   loadEnv,
   loadTraderConfig,
-  projectRoot,
   type TraderConfig,
   type TraderEnv,
 } from './config.js';
-import { ClaudeAdvisor, type Advisor } from './advisor.js';
+import { CHAIN_DESCRIPTIONS, ClaudeAdvisor, type Advisor } from './advisor.js';
 import { LiveBroker, PaperBroker } from './brokers.js';
+import { BscChain } from './chains/bsc/index.js';
 import { JupiterClient } from './chains/solana/jupiter.js';
 import { SolanaChain } from './chains/solana/index.js';
 import {
@@ -19,11 +19,12 @@ import {
   type Db,
 } from './db.js';
 import {
+  fetchNativePriceUsd,
   fetchPairsForMints,
-  fetchSolPriceUsd,
   fetchTopBoosts,
 } from './datasources/dexscreener.js';
 import { fetchNewPools, fetchTrendingPools } from './datasources/geckoterminal.js';
+import { fetchGoPlusSecurity } from './datasources/goplus.js';
 import { PumpPortalFeed } from './datasources/pumpportal.js';
 import { fetchRugcheck } from './datasources/rugcheck.js';
 import { cachedSource, TraderEngine, type Sources } from './engine.js';
@@ -31,7 +32,7 @@ import { startDashboard } from './server.js';
 import { ageMin, cleanLabel, pct, price, shortAddr, sol, table, usd } from './format.js';
 import { logger } from './log.js';
 import { loadKeypair } from './wallet.js';
-import type { Broker } from './types.js';
+import type { Broker, ChainAdapter } from './types.js';
 
 const HELP = `
 memecoin-trader — bot pessoal de trading de memecoins na Solana
@@ -62,45 +63,69 @@ interface Ctx {
   cfgBox: { current: TraderConfig };
   env: TraderEnv;
   db: Db;
-  chain: SolanaChain;
+  chain: ChainAdapter;
   broker: Broker;
   engine: TraderEngine;
   /** Feed websocket do pump.fun — só é ligado no `run` (processos one-shot não têm o que ouvir). */
   pumpportal: PumpPortalFeed | null;
 }
 
-function buildSources(cfg: TraderConfig, pumpportal: PumpPortalFeed | null): Sources {
+/**
+ * As fontes da rede deste processo. Solana e BSC compartilham DexScreener e
+ * GeckoTerminal (parametrizados); a análise de segurança muda de mundo:
+ * RugCheck na Solana, GoPlus na BSC (honeypot/taxas de contrato).
+ */
+function buildSources(
+  cfg: TraderConfig,
+  pumpportal: PumpPortalFeed | null,
+  chain: 'solana' | 'bsc',
+): Sources {
   // As fontes de DESCOBERTA por HTTP são cacheadas (rate limit do GeckoTerminal);
-  // enriquecimento e preço do SOL continuam frescos a cada tick. O PumpPortal é
-  // push (websocket) — a watchlist dele já é o "cache".
+  // enriquecimento e preço do nativo continuam frescos a cada tick. O PumpPortal
+  // é push (websocket, só Solana) — a watchlist dele já é o "cache".
   const ttlMs = cfg.discovery.sourceTtlSec * 1000;
   return {
     pumpportal: async () => pumpportal?.candidates() ?? [],
-    trending: cachedSource(fetchTrendingPools, ttlMs),
-    newPools: cachedSource(fetchNewPools, ttlMs),
-    boosts: cachedSource(fetchTopBoosts, ttlMs),
-    pairs: (mints) => fetchPairsForMints(mints),
-    rugcheck: (mint) => fetchRugcheck(mint, cfg.risk.rugcheckTimeoutMs),
-    solPriceUsd: fetchSolPriceUsd,
+    trending: cachedSource(() => fetchTrendingPools(chain), ttlMs),
+    newPools: cachedSource(() => fetchNewPools(chain), ttlMs),
+    boosts: cachedSource(() => fetchTopBoosts(chain), ttlMs),
+    pairs: (mints) => fetchPairsForMints(mints, Date.now(), chain),
+    rugcheck:
+      chain === 'bsc'
+        ? (mint) => fetchGoPlusSecurity(mint, cfg.risk.rugcheckTimeoutMs)
+        : (mint) => fetchRugcheck(mint, cfg.risk.rugcheckTimeoutMs),
+    solPriceUsd: () => fetchNativePriceUsd(chain),
   };
 }
 
 async function buildCtx(): Promise<Ctx> {
-  const cfg = loadTraderConfig();
   const env = loadEnv();
+  const cfg = loadTraderConfig(configPathForChain(env.chain));
   assertLiveAllowed(env);
 
-  const db = openTraderDb(env.dataDir);
-  const keypair = loadKeypair(env);
-  const chain = await SolanaChain.connect(env.rpcUrls, keypair, logger);
-  const jupiter = new JupiterClient(env.jupiterBaseUrl, env.jupiterApiKey);
-  const broker: Broker =
-    env.mode === 'live'
-      ? new LiveBroker(chain, jupiter, cfg.execution, logger)
-      : new PaperBroker(db, cfg.execution, cfg.sizing);
-  const pumpportal = cfg.discovery.pumpportal.enabled
-    ? new PumpPortalFeed(cfg.discovery.pumpportal, logger)
-    : null;
+  const db = openTraderDb(env.dataDir, env.chain);
+
+  let chain: ChainAdapter;
+  let broker: Broker;
+  let pumpportal: PumpPortalFeed | null = null;
+
+  if (env.chain === 'bsc') {
+    // FASE 1: BSC roda só em paper (assertLiveAllowed já barrou o live).
+    chain = await BscChain.connect(env.bscRpcUrls, logger);
+    broker = new PaperBroker(db, cfg.execution, cfg.sizing);
+  } else {
+    const keypair = loadKeypair(env);
+    const solana = await SolanaChain.connect(env.rpcUrls, keypair, logger);
+    const jupiter = new JupiterClient(env.jupiterBaseUrl, env.jupiterApiKey);
+    chain = solana;
+    broker =
+      env.mode === 'live'
+        ? new LiveBroker(solana, jupiter, cfg.execution, logger)
+        : new PaperBroker(db, cfg.execution, cfg.sizing);
+    pumpportal = cfg.discovery.pumpportal.enabled
+      ? new PumpPortalFeed(cfg.discovery.pumpportal, logger)
+      : null;
+  }
 
   const cfgBox = { current: cfg };
 
@@ -109,7 +134,12 @@ async function buildCtx(): Promise<Ctx> {
   let advisor: Advisor | null = null;
   if (cfg.ai.enabled) {
     if (env.anthropicApiKey) {
-      advisor = new ClaudeAdvisor(() => cfgBox.current, env.anthropicApiKey, logger);
+      advisor = new ClaudeAdvisor(
+        () => cfgBox.current,
+        env.anthropicApiKey,
+        logger,
+        CHAIN_DESCRIPTIONS[env.chain],
+      );
       logger.info(
         { model: cfg.ai.model, minConfidence: cfg.ai.minConfidence },
         'Filtro de IA ligado — segunda opinião do Claude antes de cada compra',
@@ -126,7 +156,7 @@ async function buildCtx(): Promise<Ctx> {
     db,
     broker,
     chain,
-    buildSources(cfg, pumpportal),
+    buildSources(cfg, pumpportal, env.chain),
     logger,
     advisor,
   );
@@ -149,7 +179,7 @@ async function cmdRun(): Promise<void> {
         engine: ctx.engine,
         broker: ctx.broker,
         walletAddress: ctx.chain.walletAddress(),
-        configPath: resolve(projectRoot, 'config', 'trader.json'),
+        configPath: configPathForChain(ctx.env.chain),
         applyConfig: (cfg) => {
           ctx.cfgBox.current = cfg;
           ctx.engine.updateConfig(cfg);
@@ -198,13 +228,14 @@ async function cmdTick(): Promise<void> {
 }
 
 function printModeBanner(ctx: Ctx): void {
+  const rede = ctx.env.chain === 'bsc' ? 'BSC' : 'Solana';
   if (ctx.env.mode === 'live') {
     logger.warn(
-      { wallet: ctx.chain.walletAddress() },
-      '🔴 MODO LIVE — as ordens gastam SOL de verdade',
+      { wallet: ctx.chain.walletAddress(), rede },
+      `🔴 MODO LIVE (${rede}) — as ordens gastam dinheiro de verdade`,
     );
   } else {
-    logger.info('🟢 Modo paper — ordens simuladas com preço real de mercado');
+    logger.info(`🟢 Modo paper (${rede}) — ordens simuladas com preço real de mercado`);
   }
 }
 
@@ -227,7 +258,7 @@ async function cmdStatus(): Promise<void> {
     return;
   }
 
-  const snaps = await fetchPairsForMints(open.map((p) => p.mint)).catch(
+  const snaps = await fetchPairsForMints(open.map((p) => p.mint), Date.now(), ctx.env.chain).catch(
     () => new Map<string, never>(),
   );
   const rows = open.map((p) => {
@@ -258,7 +289,8 @@ async function cmdCheck(mint: string | undefined): Promise<void> {
   const ctx = await buildCtx();
 
   console.log(`\nAnalisando ${mint}...\n`);
-  const snap = (await fetchPairsForMints([mint])).get(mint);
+  const canonical = ctx.env.chain === 'bsc' ? mint.toLowerCase() : mint;
+  const snap = (await fetchPairsForMints([canonical], Date.now(), ctx.env.chain)).get(canonical);
   if (snap) {
     console.log(`Token:      ${snap.symbol} (${snap.name}) na ${snap.dexId}`);
     console.log(`Preço:      $${price(snap.priceUsd)}  (5m ${pct(snap.change5mPct)} · 1h ${pct(snap.change1hPct)} · 24h ${pct(snap.change24hPct)})`);
@@ -272,8 +304,8 @@ async function cmdCheck(mint: string | undefined): Promise<void> {
   }
 
   const curve = snap ? ctx.cfg.entry.gates.curveDexIds.includes(snap.dexId) : false;
-  if (curve) console.log('(bonding curve — gates de liquidez e concentração não se aplicam)\n');
-  const analysis = await ctx.engine.analyzeToken(mint, curve);
+  if (curve) console.log('(bonding curve — concentração medida sobre o circulante)\n');
+  const analysis = await ctx.engine.analyzeToken(canonical, curve);
   const { report } = analysis;
   const emoji = report.verdict === 'approved' ? '🟢' : report.verdict === 'rejected' ? '🟡' : '🔴';
   console.log(`${emoji} Risco: ${report.score}/100 — ${report.verdict.toUpperCase()}`);
@@ -376,20 +408,58 @@ async function cmdDoctor(): Promise<void> {
   let cfg: TraderConfig;
   let env: TraderEnv;
   try {
-    cfg = loadTraderConfig();
-    ok('config/trader.json válido');
+    env = loadEnv();
+    assertLiveAllowed(env);
+    ok(`rede ${env.chain} · modo ${env.mode}`, env.mode === 'live' ? 'com LIVE_TRADING_ACK confirmado' : 'ordens simuladas');
   } catch (err) {
-    bad('config/trader.json', (err as Error).message);
+    bad('modo de operação', (err as Error).message);
     process.exitCode = 1;
     return;
   }
   try {
-    env = loadEnv();
-    assertLiveAllowed(env);
-    ok(`modo ${env.mode}`, env.mode === 'live' ? 'com LIVE_TRADING_ACK confirmado' : 'ordens simuladas');
+    cfg = loadTraderConfig(configPathForChain(env.chain));
+    ok(`config ${env.chain === 'bsc' ? 'trader.bsc.json' : 'trader.json'} válido`);
   } catch (err) {
-    bad('modo de operação', (err as Error).message);
+    bad('config', (err as Error).message);
     process.exitCode = 1;
+    return;
+  }
+
+  if (env.chain === 'bsc') {
+    console.log('\nRPC da BSC:');
+    try {
+      await BscChain.connect(env.bscRpcUrls, logger);
+      ok('RPC respondendo');
+    } catch (err) {
+      bad('RPC', (err as Error).message);
+    }
+
+    console.log('\nFontes de dados:');
+    try {
+      const bnb = await fetchNativePriceUsd('bsc');
+      if (bnb) ok('DexScreener', `BNB a ${usd(bnb)}`);
+      else bad('DexScreener', 'sem preço do BNB');
+    } catch (err) {
+      bad('DexScreener', (err as Error).message);
+    }
+    try {
+      const trending = await fetchTrendingPools('bsc');
+      ok('GeckoTerminal trending (bsc)', `${trending.length} pools`);
+    } catch (err) {
+      bad('GeckoTerminal', (err as Error).message);
+    }
+    // CAKE: token estabelecido — se o GoPlus não analisa nem ele, está fora do ar.
+    const CAKE = '0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82';
+    const gp = await fetchGoPlusSecurity(CAKE, cfg.risk.rugcheckTimeoutMs);
+    if (gp.available) ok('GoPlus', `CAKE analisado (${gp.dangerFlags.length} danger flags)`);
+    else bad('GoPlus', `${gp.reason} — e requireRugcheck=true bloqueia tudo sem ele`);
+
+    console.log(
+      failures === 0
+        ? '\nTudo pronto. Rode `TRADER_CHAIN=bsc npm run trader -- run` (paper — live é a fase 2).'
+        : `\n${failures} problema(s) acima precisam de atenção antes de rodar.`,
+    );
+    if (failures > 0) process.exitCode = 1;
     return;
   }
 
@@ -426,7 +496,7 @@ async function cmdDoctor(): Promise<void> {
   // BONK: token estabelecido — se as fontes não acham nem ele, estão fora do ar.
   const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
   try {
-    const solPrice = await fetchSolPriceUsd();
+    const solPrice = await fetchNativePriceUsd('solana');
     if (solPrice) ok('DexScreener', `SOL a ${usd(solPrice)}`);
     else bad('DexScreener', 'sem preço do SOL');
   } catch (err) {

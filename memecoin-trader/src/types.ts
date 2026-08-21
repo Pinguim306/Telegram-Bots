@@ -9,8 +9,11 @@ import type { ExecutionConfig, SizingConfig } from './config.js';
  *   - Broker        -> a EXECUÇÃO (paper ou live), atrás da mesma interface
  */
 
-/** Rede suportada. 'solana' hoje; a expansão para a Robinhood Chain (EVM) entra aqui. */
-export type ChainKey = 'solana';
+/**
+ * Rede suportada. Um PROCESSO roda uma rede (TRADER_CHAIN no .env) — config,
+ * banco e painel próprios por rede; falha numa não derruba a outra.
+ */
+export type ChainKey = 'solana' | 'bsc';
 
 export type TradeMode = 'paper' | 'live';
 
@@ -115,6 +118,13 @@ export type RugcheckSummary =
       warnFlags: string[];
       /** % da liquidez travada/queimada, PONDERADA pela liquidez de cada mercado. */
       lpLockedPct: number | null;
+      /**
+       * Taxas embutidas no CONTRATO do token (EVM/GoPlus) — na BSC são a
+       * norma, não a exceção, e entram no custo real de cada trade.
+       * undefined = fonte não informa (RugCheck/Solana).
+       */
+      buyTaxPct?: number | null;
+      sellTaxPct?: number | null;
       holderCount: number | null;
       /** Top 10 holders (%) já excluindo contas conhecidas de AMM/LP. */
       top10Pct: number | null;

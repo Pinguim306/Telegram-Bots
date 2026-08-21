@@ -15,6 +15,17 @@ const BASE = 'https://api.dexscreener.com';
 /** Mint do wrapped SOL — o "SOL" dos pares de DEX. */
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
+/**
+ * WBNB — o "BNB" dos pares de DEX da BSC. Minúsculo de propósito: endereço
+ * EVM tem casing de checksum variável, e TODO endereço BSC no bot é
+ * canonicalizado para minúsculas na ingestão — sem isso, o mesmo token vindo
+ * do GeckoTerminal ("0xab...") e do DexScreener ("0xAb...") viraria dois.
+ */
+export const WBNB_ADDRESS = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c';
+
+/** Rede na nomenclatura do DexScreener (campo chainId dos pares). */
+export type DsChain = 'solana' | 'bsc';
+
 const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
   return Number.isFinite(n) ? n : 0;
@@ -29,11 +40,13 @@ const numOrNull = (v: unknown): number | null => {
  * Normaliza um par cru do DexScreener. Exportada para teste — o formato da API
  * é a parte que quebra em silêncio quando eles mudam alguma coisa.
  */
-export function normalizePair(raw: unknown, nowMs: number): PairSnapshot | null {
+export function normalizePair(raw: unknown, nowMs: number, chain: DsChain = 'solana'): PairSnapshot | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const p = raw as Record<string, any>;
 
-  if (p.chainId !== 'solana') return null;
+  // O endpoint de tokens é multi-chain: o MESMO endereço pode existir em
+  // outra rede — filtrar pela rede deste processo é obrigatório.
+  if (p.chainId !== chain) return null;
   const base = p.baseToken;
   if (typeof base?.address !== 'string' || base.address === '') return null;
 
@@ -43,7 +56,8 @@ export function normalizePair(raw: unknown, nowMs: number): PairSnapshot | null 
   const createdAtMs = numOrNull(p.pairCreatedAt);
 
   return {
-    mint: base.address,
+    // EVM: canonicaliza para minúsculas (casing de checksum varia por fonte).
+    mint: chain === 'bsc' ? base.address.toLowerCase() : base.address,
     // cleanLabel: nome de token é conteúdo hostil (escapes ANSI reescrevem o
     // terminal por cima do veredito de risco) — sanitiza na ingestão.
     symbol: typeof base.symbol === 'string' ? cleanLabel(base.symbol, 12) : '?',
@@ -100,13 +114,14 @@ function extractPairs(json: unknown): unknown[] {
 export async function fetchPairsForMints(
   mints: string[],
   nowMs = Date.now(),
+  chain: DsChain = 'solana',
 ): Promise<Map<string, PairSnapshot>> {
   const result = new Map<string, PairSnapshot>();
   for (let i = 0; i < mints.length; i += 30) {
     const chunk = mints.slice(i, i + 30);
     const json = await fetchJson(`${BASE}/latest/dex/tokens/${chunk.join(',')}`);
     const normalized = extractPairs(json)
-      .map((p) => normalizePair(p, nowMs))
+      .map((p) => normalizePair(p, nowMs, chain))
       .filter((p): p is PairSnapshot => p !== null)
       // Enriquecendo o mint X, só interessam pares onde X é o base token —
       // um par onde X aparece como quote daria preço do OUTRO token.
@@ -117,20 +132,30 @@ export async function fetchPairsForMints(
 }
 
 /** Tokens com boost pago no DexScreener. Sinal fraco sozinho (é comprável), mas indica atividade. */
-export async function fetchTopBoosts(): Promise<Candidate[]> {
+export async function fetchTopBoosts(chain: DsChain = 'solana'): Promise<Candidate[]> {
   const json = await fetchJson(`${BASE}/token-boosts/top/v1`);
   if (!Array.isArray(json)) return [];
   const out: Candidate[] = [];
   for (const item of json as Record<string, any>[]) {
-    if (item?.chainId !== 'solana' || typeof item?.tokenAddress !== 'string') continue;
-    out.push({ mint: item.tokenAddress, symbol: '?', sources: ['ds-boosts'] });
+    if (item?.chainId !== chain || typeof item?.tokenAddress !== 'string') continue;
+    const mint = chain === 'bsc' ? item.tokenAddress.toLowerCase() : item.tokenAddress;
+    out.push({ mint, symbol: '?', sources: ['ds-boosts'] });
   }
   return out;
 }
 
-/** Preço do SOL em USD via o par de maior liquidez do wrapped SOL. */
-export async function fetchSolPriceUsd(): Promise<number | null> {
-  const pairs = await fetchPairsForMints([WSOL_MINT]);
-  const snap = pairs.get(WSOL_MINT);
+/**
+ * Preço em USD da moeda NATIVA da rede (SOL/BNB), via o par de maior liquidez
+ * do wrapped correspondente. É o câmbio de toda a contabilidade do bot.
+ */
+export async function fetchNativePriceUsd(chain: DsChain = 'solana'): Promise<number | null> {
+  const wrapped = chain === 'bsc' ? WBNB_ADDRESS : WSOL_MINT;
+  const pairs = await fetchPairsForMints([wrapped], Date.now(), chain);
+  const snap = pairs.get(wrapped);
   return snap && snap.priceUsd > 0 ? snap.priceUsd : null;
+}
+
+/** Compatibilidade: preço do SOL (o nome antigo, usado pelo caminho Solana). */
+export async function fetchSolPriceUsd(): Promise<number | null> {
+  return fetchNativePriceUsd('solana');
 }

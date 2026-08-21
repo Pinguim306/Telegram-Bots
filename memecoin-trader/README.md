@@ -314,6 +314,35 @@ convivem separadas pela coluna `mode`.
 O engine recebe fontes, chain e broker por injeção — os testes rodam o laço completo
 (descoberta → risco → compra → stop loss) sem rede nenhuma.
 
+### BSC (BNB Chain) — fase 1: paper
+
+O bot roda na BSC com `TRADER_CHAIN=bsc` no `.env` (ou na frente do comando):
+
+```bash
+TRADER_CHAIN=bsc npm run trader -- doctor   # valida RPC, DexScreener, GeckoTerminal e GoPlus
+TRADER_CHAIN=bsc npm run trader -- run      # paper trading (painel em http://localhost:3878)
+```
+
+Um **processo por rede**, de propósito: config próprio
+([`config/trader.bsc.json`](config/trader.bsc.json)), banco próprio
+(`data/trader-bsc.sqlite`) e painel em porta própria — dá para rodar Solana live e BSC
+paper lado a lado em dois terminais, e falha numa rede não derruba a outra.
+
+O que muda de mundo na BSC:
+
+- **Segurança é análise de CONTRATO**, não de flags SPL: honeypot, taxa alterável,
+  blacklist e trading pausável são a norma. A leitura vem do **GoPlus** (o RugCheck da
+  EVM), mapeada para o mesmo motor de risco — e `requireRugcheck=true` no config da BSC:
+  sem GoPlus, rejeita. Taxa de venda acima de `maxSellTaxPct` (10%) rejeita sozinha — ela
+  come o alvo de lucro inteiro.
+- Endereços EVM são **canonicalizados para minúsculas** na ingestão (o casing de
+  checksum varia por fonte).
+- PumpPortal é pump.fun (Solana) — desligado; a descoberta usa GeckoTerminal e
+  DexScreener parametrizados por rede.
+- Os campos `*Sol` do config/banco valem como "moeda NATIVA" (BNB na BSC).
+- **Live na BSC é a fase 2** (PancakeSwap router, approve, nonce) — o boot recusa
+  `TRADER_MODE=live` com `TRADER_CHAIN=bsc` até lá.
+
 ### Expansão para outras redes
 
 A próxima rede alvo é a **Robinhood Chain** (L2 EVM baseada em Arbitrum Orbit). O desenho
