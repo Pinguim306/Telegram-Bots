@@ -76,11 +76,22 @@ const fmtUsd = (v: number) => `US$ ${Math.round(v).toLocaleString('pt-BR')}`;
  * token dentro da faixa nova ("Mcap 4.3k está fora da faixa alvo (15-30k)")
  * depois que o operador mudou os gates pelo painel. Exportada para teste.
  */
-export function buildSystemPrompt(cfg: TraderConfig): string {
+/** Descrição do mundo em que o bot opera, por rede — vai no prompt da IA. */
+export const CHAIN_DESCRIPTIONS = {
+  solana:
+    'na Solana (bonding curve do pump.fun e recém-graduadas no pumpswap)',
+  bsc:
+    'na BSC/BNB Chain (PancakeSwap). Atenção às particularidades da rede: honeypot e taxas embutidas no contrato são a NORMA aqui — as flags de risco trazem a leitura do GoPlus; blocos de ~3s tornam o giro mais lento que na Solana',
+} as const;
+
+export function buildSystemPrompt(
+  cfg: TraderConfig,
+  chainDesc: string = CHAIN_DESCRIPTIONS.solana,
+): string {
   const g = cfg.entry.gates;
   const mcapMin = g.minMarketCapUsd > 0 ? fmtUsd(g.minMarketCapUsd) : 'sem piso';
   const mcapMax = g.maxMarketCapUsd > 0 ? fmtUsd(g.maxMarketCapUsd) : 'sem teto';
-  return `Você é o analista final de um bot de scalp de memecoins recém-nascidas na Solana (bonding curve do pump.fun e recém-graduadas no pumpswap).
+  return `Você é o analista final de um bot de scalp de memecoins recém-nascidas ${chainDesc}.
 
 A estratégia ATUAL do operador (venha sempre destes números — não assuma outros): market cap alvo entre ${mcapMin} e ${mcapMax}, alvo de lucro +${cfg.exit.takeProfitPct}%, stop de -${cfg.exit.stopLossPct}%, segurando no máximo ${cfg.exit.maxHoldMin} minutos. Trades pequenos, giro alto.
 
@@ -144,6 +155,7 @@ export class ClaudeAdvisor implements Advisor {
     private readonly getCfg: () => TraderConfig,
     apiKey: string,
     private readonly log: Logger,
+    private readonly chainDesc: string = CHAIN_DESCRIPTIONS.solana,
   ) {
     this.client = new Anthropic({ apiKey, maxRetries: 1 });
   }
@@ -165,7 +177,11 @@ export class ClaudeAdvisor implements Advisor {
           // System estável (só muda quando o config muda) com cache: só o
           // brief varia entre chamadas.
           system: [
-            { type: 'text', text: buildSystemPrompt(cfg), cache_control: { type: 'ephemeral' } },
+            {
+              type: 'text',
+              text: buildSystemPrompt(cfg, this.chainDesc),
+              cache_control: { type: 'ephemeral' },
+            },
           ],
           output_config: {
             effort: cfg.ai.effort,

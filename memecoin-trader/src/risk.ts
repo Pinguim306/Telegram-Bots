@@ -237,6 +237,21 @@ export function assessRisk(input: RiskInput, cfg: RiskConfig): RiskReport {
     if (rug.lpLockedPct !== null && rug.lpLockedPct < cfg.minLpLockedPct) {
       add('lp_unlocked', 'medium', `Só ${rug.lpLockedPct.toFixed(0)}% da LP travada/queimada`, 12);
     }
+    // Taxas embutidas no CONTRATO (EVM/GoPlus). Taxa de venda alta come o
+    // alvo de +10% inteiro — é custo invisível que precisa pontuar.
+    if (rug.sellTaxPct !== undefined && rug.sellTaxPct !== null && rug.sellTaxPct > cfg.maxSellTaxPct) {
+      // Base acima do maxScore default (40): taxa de venda maior que o teto
+      // come o alvo de lucro inteiro — a matemática do trade já nasceu quebrada.
+      add(
+        'sell_tax',
+        'high',
+        `Taxa de venda de ${rug.sellTaxPct.toFixed(1)}% no contrato`,
+        Math.min(50, 41 + (rug.sellTaxPct - cfg.maxSellTaxPct)),
+      );
+    }
+    if (rug.buyTaxPct !== undefined && rug.buyTaxPct !== null && rug.buyTaxPct > cfg.maxSellTaxPct) {
+      add('buy_tax', 'high', `Taxa de compra de ${rug.buyTaxPct.toFixed(1)}% no contrato`, 25);
+    }
   }
 
   score = Math.min(100, Math.round(score));

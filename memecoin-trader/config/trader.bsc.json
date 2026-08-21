@@ -1,0 +1,171 @@
+{
+  "$comment": "Perfil BSC (TRADER_CHAIN=bsc) — FASE 1: paper apenas. Memecoins da PancakeSwap com momentum. Diferenças de mundo vs Solana: bloco de ~3s (scalp mais lento), honeypot/taxas de contrato são a norma (GoPlus obrigatório: requireRugcheck=true), liquidez e mcap vivem numa escala maior. Calibração inicial conservadora — ajuste pelo painel (porta 3878) com dados do paper.",
+  "loop": {
+    "tickSec": 15,
+    "candidatesPerTick": 3,
+    "tokenCooldownMin": 30
+  },
+  "discovery": {
+    "geckoTrending": true,
+    "geckoNew": true,
+    "dexscreenerBoosts": true,
+    "pumpportal": {
+      "enabled": false,
+      "newMints": false,
+      "migrations": false,
+      "watchWindowMin": 90,
+      "incubationMin": 5
+    },
+    "sourceTtlSec": 60,
+    "maxCandidatesPerTick": 200,
+    "excludeMints": [
+      "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "0xe9e7cea3dedca5984780bafc599bd69add087d56",
+      "0x55d398326f99059ff775485246999027b3197955",
+      "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c",
+      "0x2170ed0880ac9a755fd29b2688956bd959f933f8",
+      "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"
+    ]
+  },
+  "entry": {
+    "gates": {
+      "allowedDexIds": [
+        "pancakeswap"
+      ],
+      "curveDexIds": [],
+      "minLiquidityUsd": 15000,
+      "maxLiquidityUsd": 300000,
+      "minVolume1hUsd": 5000,
+      "minAgeMin": 10,
+      "maxAgeHours": 48,
+      "minTxns1h": 60,
+      "minBuyRatio1h": 0.55,
+      "maxDrop5mPct": 15,
+      "minMarketCapUsd": 20000,
+      "maxMarketCapUsd": 300000,
+      "minVolumePaceUsdPerMin": 300,
+      "minTxnsPerMin": 2
+    },
+    "minScore": 55,
+    "rules": [
+      {
+        "id": "momentum_5m",
+        "label": "Momentum 5m",
+        "points": 20,
+        "params": {
+          "minPct": 3
+        }
+      },
+      {
+        "id": "momentum_1h",
+        "label": "Momentum 1h",
+        "points": 20,
+        "params": {
+          "minPct": 10
+        }
+      },
+      {
+        "id": "volume_spike",
+        "label": "Spike de volume 1h",
+        "points": 25,
+        "params": {
+          "minMultiple": 3
+        }
+      },
+      {
+        "id": "buy_pressure",
+        "label": "Pressão compradora 1h",
+        "points": 20,
+        "params": {
+          "minRatio": 0.55,
+          "minBuys": 50
+        }
+      },
+      {
+        "id": "turnover",
+        "label": "Giro sobre a liquidez",
+        "points": 10,
+        "params": {
+          "minRatio": 2
+        }
+      },
+      {
+        "id": "trending",
+        "label": "Trending nas fontes",
+        "points": 10,
+        "params": {}
+      }
+    ]
+  },
+  "risk": {
+    "maxScore": 40,
+    "vetoMintAuthority": true,
+    "vetoFreezeAuthority": true,
+    "vetoToken2022": false,
+    "vetoRugcheckDanger": true,
+    "requireRugcheck": true,
+    "requireOnchain": true,
+    "maxTop1Pct": 20,
+    "maxTop10Pct": 60,
+    "curveMaxTop1Pct": 30,
+    "curveMaxTop10Pct": 70,
+    "linkageEnabled": false,
+    "linkageTopN": 10,
+    "linkageSlotTolerance": 2,
+    "maxSameSlotCluster": 3,
+    "maxSharedFunderCluster": 2,
+    "maxSellTaxPct": 10,
+    "minLpLockedPct": 60,
+    "maxRugcheckScore": 60,
+    "minHolderCount": 100,
+    "rugcheckTimeoutMs": 8000
+  },
+  "sizing": {
+    "positionPctOfBalance": 20,
+    "maxPositionSol": 0.05,
+    "minPositionSol": 0.005,
+    "maxOpenPositions": 6,
+    "reserveSol": 0.01,
+    "maxDailyLossSol": 0.1,
+    "riskScaling": true,
+    "paperStartBalanceSol": 1
+  },
+  "exit": {
+    "stopLossPct": 12,
+    "takeProfitPct": 10,
+    "takeProfitSellPct": 100,
+    "trailingActivatePct": 6,
+    "trailingStopPct": 5,
+    "maxHoldMin": 60,
+    "liquidityDrainPct": 50,
+    "staleTicksToExit": 4,
+    "deadVolume5mUsd": 250,
+    "deadTxns5m": 4,
+    "deadTicksToExit": 3,
+    "deadMinHoldMin": 5
+  },
+  "execution": {
+    "slippageBps": 200,
+    "emergencySlippageBps": 1500,
+    "pumpportalFallback": false,
+    "maxPriorityFeeLamports": 0,
+    "confirmTimeoutSec": 90,
+    "paperSlippagePct": 1,
+    "maxRoundTripCostPct": 6,
+    "fallbackMaxPositionSol": 0.05,
+    "fallbackBuySlippageBps": 500
+  },
+  "ai": {
+    "enabled": true,
+    "model": "claude-opus-5",
+    "effort": "low",
+    "minConfidence": 65,
+    "maxCallsPerHour": 60,
+    "timeoutSec": 30
+  },
+  "dashboard": {
+    "enabled": true,
+    "port": 3878
+  }
+}

@@ -12,9 +12,14 @@ export type Db = Database.Database;
  * Posições paper e live convivem no mesmo arquivo, separadas pela coluna `mode` —
  * trocar de modo não faz o bot "enxergar" posições do outro modo.
  */
-export function openTraderDb(dataDir: string): Db {
+export function openTraderDb(dataDir: string, chain: 'solana' | 'bsc' = 'solana'): Db {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(resolve(dataDir, 'trader.sqlite'));
+  // Um ARQUIVO por rede: além das posições (que já têm coluna chain), o kv
+  // (caixa paper), a estatística diária do circuit breaker e os cooldowns são
+  // globais na tabela — compartilhar o arquivo misturaria o PnL das redes.
+  // 'trader.sqlite' fica para a Solana (compatibilidade com o banco existente).
+  const file = chain === 'bsc' ? 'trader-bsc.sqlite' : 'trader.sqlite';
+  const db = new Database(resolve(dataDir, file));
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('busy_timeout = 5000');

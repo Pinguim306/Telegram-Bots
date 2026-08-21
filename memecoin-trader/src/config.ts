@@ -154,6 +154,12 @@ const riskSchema = z.object({
    * Custa ~20-30 chamadas de RPC por token analisado — só roda no último
    * degrau do funil, e falha vira null (nunca trava a análise).
    */
+  /**
+   * Taxa máxima (%) de compra/venda embutida no contrato do token (EVM). Na
+   * BSC taxa é norma — acima disso pontua alto. Irrelevante na Solana
+   * (o RugCheck não reporta taxas). .default para config antigo.
+   */
+  maxSellTaxPct: z.number().min(0).max(100).default(10),
   linkageEnabled: z.boolean().default(true),
   /** Quantas contas do topo checar (teto de custo de RPC). */
   linkageTopN: z.number().int().min(3).max(20).default(10),
@@ -297,6 +303,15 @@ export type ExitConfig = TraderConfig['exit'];
 export type ExecutionConfig = TraderConfig['execution'];
 export type AiConfig = TraderConfig['ai'];
 
+/**
+ * Um arquivo de config POR REDE: trader.json (Solana, o original) e
+ * trader.bsc.json. Cada rede tem calibração própria — liquidez, mcap e taxas
+ * de memecoin da BSC vivem em outra escala.
+ */
+export function configPathForChain(chain: 'solana' | 'bsc'): string {
+  return resolve(projectRoot, 'config', chain === 'bsc' ? 'trader.bsc.json' : 'trader.json');
+}
+
 export function loadTraderConfig(path = resolve(projectRoot, 'config', 'trader.json')): TraderConfig {
   let raw: unknown;
   try {
@@ -313,10 +328,14 @@ export function loadTraderConfig(path = resolve(projectRoot, 'config', 'trader.j
 
 export interface TraderEnv {
   mode: TradeMode;
+  /** Rede deste PROCESSO (TRADER_CHAIN). Uma rede por processo, de propósito. */
+  chain: 'solana' | 'bsc';
   liveAck: boolean;
   privateKey?: string;
   keypairFile?: string;
   rpcUrls: string[];
+  /** RPCs da BSC (BSC_RPC_URL, separados por vírgula). Só usados com TRADER_CHAIN=bsc. */
+  bscRpcUrls: string[];
   jupiterBaseUrl: string;
   jupiterApiKey?: string;
   /** Chave da API da Anthropic — liga o filtro de IA quando ai.enabled=true. */
@@ -337,12 +356,21 @@ export function loadEnv(): TraderEnv {
   if (modeRaw !== 'paper' && modeRaw !== 'live') {
     throw new Error(`TRADER_MODE inválido: "${modeRaw}". Use "paper" ou "live".`);
   }
+  const chainRaw = (process.env.TRADER_CHAIN ?? 'solana').toLowerCase();
+  if (chainRaw !== 'solana' && chainRaw !== 'bsc') {
+    throw new Error(`TRADER_CHAIN inválido: "${chainRaw}". Use "solana" ou "bsc".`);
+  }
   return {
     mode: modeRaw,
+    chain: chainRaw,
     liveAck: envOrUndefined('LIVE_TRADING_ACK') === LIVE_ACK_PHRASE,
     privateKey: envOrUndefined('SOLANA_PRIVATE_KEY'),
     keypairFile: envOrUndefined('SOLANA_KEYPAIR_FILE'),
     rpcUrls: (envOrUndefined('SOLANA_RPC_URL') ?? 'https://api.mainnet-beta.solana.com')
+      .split(',')
+      .map((u) => u.trim())
+      .filter(Boolean),
+    bscRpcUrls: (envOrUndefined('BSC_RPC_URL') ?? 'https://bsc-dataseed.bnbchain.org')
       .split(',')
       .map((u) => u.trim())
       .filter(Boolean),
@@ -363,6 +391,11 @@ export function loadEnv(): TraderEnv {
  */
 export function assertLiveAllowed(env: TraderEnv): void {
   if (env.mode !== 'live') return;
+  if (env.chain === 'bsc') {
+    throw new Error(
+      'TRADER_CHAIN=bsc ainda não suporta modo LIVE (fase 2 do plano) — rode em paper: TRADER_MODE=paper.',
+    );
+  }
   if (!env.liveAck) {
     throw new Error(
       [
