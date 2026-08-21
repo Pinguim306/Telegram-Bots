@@ -62,6 +62,7 @@ npm run trader -- check <mint> # relatório de risco + sinal de entrada de um to
 npm run trader -- buy <mint> <sol> [--force]
 npm run trader -- sell <mint|all> [pct]
 npm run trader -- history [n]  # posições fechadas + win rate
+npm run trader -- replay [h]   # simula o que as decisões do funil teriam rendido
 npm run trader -- paper-reset  # zera o caixa simulado
 npm run trader -- doctor
 ```
@@ -83,6 +84,34 @@ que o bot pensaria dele.
 - **PnL por motivo de saída**, que mostra onde a banca vaza (foi assim que apareceu que
   `sniper_dump` respondia por 89% do prejuízo).
 
+### `replay` — calibração com número, não com palpite
+
+Toda decisão FINAL do funil (comprado, reprovado pelo risco, reprovado pela IA, barrado
+por capacidade) fica gravada na tabela `decisions` com o snapshot do momento e um hash
+do config vigente. O `replay` busca as velas de minuto reais (GeckoTerminal) de cada
+pool decidido e reexecuta as regras de saída a partir do preço da decisão:
+
+```
+reprovadas pela IA: 11 decisões, 9 simuladas, 2 sem dados
+   PnL simulado: mediana -12% · soma -74% · 2 teriam dado lucro, 7 prejuízo
+✅ O filtro de IA está SALVANDO dinheiro: as reprovações teriam somado -74%.
+```
+
+É a resposta direta a "esse filtro está me salvando ou me custando dinheiro?". Limites
+declarados: os números são o **teto otimista** (o stop simula no preço nominal; medido
+em produção ele executa ~2x pior), dentro de uma mesma vela o pior caso vence (stop
+antes de alvo), e as saídas de liquidez/token-morto não são simuladas (precisam de
+volume por tick, que vela não tem).
+
+### O veto da IA é simétrico
+
+`ai.minConfidence` filtra as aprovações e `ai.minSkipConfidence` (default 75) filtra os
+vetos. Antes, qualquer "pular" bloqueava — enquanto o prompt manda a IA, na dúvida,
+pular com confiança baixa. Medido em produção: 11 de 11 candidatos que sobreviveram a
+gates+risco morreram num "pular" de confiança 66–78. Abaixo do limiar, a dúvida da IA
+vira nota nos motivos da posição (e no `decisions`), não veto — e o `replay` diz depois
+se ela tinha razão.
+
 ---
 
 ## Como o bot decide
@@ -91,7 +120,10 @@ que o bot pensaria dele.
 
 O config que vem no repositório mira **tokens do pump.fun** — na bonding curve
 (dexId `pumpfun`) e recém-graduados (`pumpswap`) — com trades rápidos: alvo de
-+10% vendendo tudo, stop de −12%, tempo máximo de 45min e tick de 15s. Os
++25% vendendo 60% (o resto corre no trailing de 8%), stop de −12%, tempo máximo
+de 45min e tick de 15s. O alvo era +10% vendendo tudo — mas a perda média REAL
+medida foi −26% (o stop nominal executa ~2x pior), o que exigia 71% de acerto só
+para empatar; com o payoff atual, acertar metade já paga. Os
 números foram calibrados contra tokens reais na curve (mcap ~$35k, 9 minutos de
 vida, +342% em 5m, 1.400 txns/h — e o mesmo token caiu −55% meia hora depois,
 que é exatamente o motivo dos stops apertados).

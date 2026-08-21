@@ -42,6 +42,21 @@ describe('config/trader.json', () => {
     expect(cfg.exit.takeProfitPct).toBeGreaterThan(cfg.exit.trailingStopPct);
   });
 
+  it('o payoff fecha a conta: breakeven abaixo de 55% com a perda REAL medida', () => {
+    // Medido on-chain: o stop nominal executa em ~2x o configurado (média
+    // -26% com stop de 12) — granularidade do tick + slippage de pânico.
+    // Com TP 10 contra essa perda, a breakeven era 71% (e 81% com o pedágio
+    // de entrada): matematicamente perdido, nenhum gate conserta. O teto de
+    // 55% aqui trava o config num regime em que acertar metade JÁ paga.
+    const avgWin = cfg.exit.takeProfitPct;
+    const avgLoss = cfg.exit.stopLossPct * 2;
+    const breakeven = avgLoss / (avgWin + avgLoss);
+    expect(breakeven).toBeLessThan(0.55);
+    // Venda PARCIAL no alvo: o resto da posição fica para o trailing —
+    // vender 100% no alvo era o que impedia qualquer vencedor de correr.
+    expect(cfg.exit.takeProfitSellPct).toBeLessThan(100);
+  });
+
   it('slippage de emergência é mais larga que a normal — é a razão de ela existir', () => {
     expect(cfg.execution.emergencySlippageBps).toBeGreaterThan(cfg.execution.slippageBps);
   });
